@@ -3415,6 +3415,13 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
 # fm_backend_herdr_kill: remove the task's pane, best-effort (mirrors
 # tmux-kill-window's `|| true` contract). Verified: closing a tab's only pane
 # closes the tab too, so a separate tab close is unnecessary.
+# That "only pane" premise does not hold on a host running a plugin whose
+# creation hook docks a companion pane into the task's tab: this close then
+# leaves that pane behind, so the tab and its projected workspace survive the
+# task. Creation-side identity is fixed (see the seeded-tab prune and
+# fm_backend_herdr_projection_convergence_verify); addressing it here belongs
+# to the fm-herdr-adapter-pane-identity-audit item, which covers every site
+# still assuming one close empties its container.
 # When the close would empty a non-focused workspace, Herdr 0.7.5's explicit
 # close moves focus to that workspace's neighbor with no restore anywhere in
 # this path, so the kill follows the same focus-safe removal plan as

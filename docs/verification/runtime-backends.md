@@ -1169,7 +1169,7 @@ workspaces: [{"workspace_id":"w1","label":"baseline"},{"workspace_id":"w2","labe
 w2 panes:   [{"pane_id":"w2:p5","tab_id":"w2:t2","label":"TestDock"}]
 ```
 
-So on a host running a pane-injecting plugin, a projected task now reaches its own workspace but that workspace is retained at cleanup until the close-one-pane-empties-the-container assumption is addressed across the adapter.
+So on a host running a pane-injecting plugin, a projected task now reaches its own workspace but that workspace is retained at cleanup until the close-one-pane-empties-the-container assumption is addressed across the adapter, which is the `fm-herdr-adapter-pane-identity-audit` item rather than part of this change.
 
 The budget arithmetic and every refusal branch are pinned portably with no Herdr installed:
 
