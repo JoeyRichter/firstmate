@@ -1148,7 +1148,28 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh bin/fm-test-run.sh --family real-herdr-gate
 
 The identical seven under an enabled pane-injecting plugin, and zero once it is removed, together place those failures on the plugin rather than on this change.
 They are not companion-pane refusals: they are assertions about closing one pane emptying its container, about husk and workspace leaks, and about focus, which a plugin's extra pane and its own focus call both break.
-The seeded-tab prune is the nearest one to this section, because it resolves which pane to close positionally rather than by the exact seeded pane id it already holds, so a plugin pane docked into the seeded tab is closed instead and that tab survives to fail the exact-task-tab check above.
+The seeded-tab prune was the nearest one to this section and is fixed here: it now closes every pane in the exact recorded seeded tab by the id Herdr reports for it, rather than one positionally chosen pane, so the tab actually empties when a plugin has docked a companion into it.
+
+That prune fix was verified live on 2026-09-11 against Herdr 0.9.0 with a real linked pane-injecting plugin whose creation hook docked a companion pane into every new workspace and tab.
+A real projected create converged, leaving exactly the task tab holding the task pane plus the plugin's companion:
+
+```text
+CONVERGED ws=w2 tab=w2:t2 pane=w2:p4
+tabs:  [{"tab_id":"w2:t2","label":"fm-pv1"}]
+panes: [{"pane_id":"w2:p4","tab_id":"w2:t2"},{"pane_id":"w2:p5","tab_id":"w2:t2","label":"TestDock"}]
+```
+
+The same create under a simulated pre-fix positional prune refused with `did not converge to its exact task tab`, and the projection e2e's unconfigured-home case reported `ok - real Herdr lab: a home that configured nothing is projected by default on herdr 0.9.0` under that live plugin.
+
+Cleanup is a separate matter and is NOT addressed here: closing only the exact recorded task pane leaves a plugin's companion pane behind, so the disposable workspace survives its own teardown.
+Measured on 2026-09-11 immediately after closing the exact recorded task pane of a converged projection:
+
+```text
+workspaces: [{"workspace_id":"w1","label":"baseline"},{"workspace_id":"w2","label":"└ lk1 · p:TRBIcl5CGqIdQfk2qJmXHA"}]
+w2 panes:   [{"pane_id":"w2:p5","tab_id":"w2:t2","label":"TestDock"}]
+```
+
+So on a host running a pane-injecting plugin, a projected task now reaches its own workspace but that workspace is retained at cleanup until the close-one-pane-empties-the-container assumption is addressed across the adapter.
 
 The budget arithmetic and every refusal branch are pinned portably with no Herdr installed:
 

@@ -132,7 +132,7 @@ SH
 make_herdr_statefake() {  # <dir> -> echoes fakebin dir; seeds an empty state file
   local dir=$1 fb="$1/fakebin"
   mkdir -p "$fb"
-  printf '{"next":1,"workspaces":[],"tabs":[],"agent_status":{}}\n' > "$dir/state.json"
+  printf '{"next":1,"workspaces":[],"tabs":[],"extra_panes":[],"agent_status":{}}\n' > "$dir/state.json"
   cat > "$fb/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -188,15 +188,35 @@ case "$cmd $sub" in
     printf '{"result":{"tab":{"tab_id":"%s"},"root_pane":{"pane_id":"%s"}}}\n' "$tabid" "$paneid"
     ;;
   "pane list")
-    jq_state --arg w "$ws" '{result:{panes:[.tabs[]|select(.workspace_id==$w)|{pane_id:.pane_id, tab_id:.tab_id}]}}'
+    jq_state --arg w "$ws" '
+      [.tabs[]|select(.workspace_id==$w)|{pane_id:.pane_id, tab_id:.tab_id}] as $roots
+      | [(.extra_panes // [])[]|select(.workspace_id==$w)|{pane_id:.pane_id, tab_id:.tab_id}] as $extra
+      | {result:{panes:($roots + $extra)}}'
     ;;
   "pane close")
     pane=${3:-}
-    jq_state --arg p "$pane" '.tabs |= [.[]|select(.pane_id != $p)]' | save
+    # Real herdr removes a tab when its LAST pane closes, so a tab holding a
+    # companion pane survives one close: drop the companion, or promote one
+    # into the root slot, and remove the tab only when nothing is left.
+    jq_state --arg p "$pane" '
+      (.extra_panes // []) as $extra
+      | if ($extra | map(.pane_id) | index($p)) != null
+        then .extra_panes = [$extra[]|select(.pane_id != $p)]
+        else
+          ([.tabs[]|select(.pane_id == $p)][0]) as $owner
+          | if $owner == null then .
+            elif ([$extra[]|select(.tab_id == $owner.tab_id)] | length) > 0
+            then ([$extra[]|select(.tab_id == $owner.tab_id)][0]) as $promote
+              | .tabs = [.tabs[]|if .pane_id == $p then .pane_id = $promote.pane_id else . end]
+              | .extra_panes = [$extra[]|select(.pane_id != $promote.pane_id)]
+            else .tabs = [.tabs[]|select(.pane_id != $p)]
+            end
+          end' | save
     ;;
   "tab close")
     tab=${3:-}
-    jq_state --arg t "$tab" '.tabs |= [.[]|select(.tab_id != $t)]' | save
+    jq_state --arg t "$tab" '.tabs |= [.[]|select(.tab_id != $t)]
+      | .extra_panes = [((.extra_panes // [])[])|select(.tab_id != $t)]' | save
     ;;
   "agent get")
     pane=${3:-}
@@ -4958,6 +4978,88 @@ EOF
   pass "fm_backend_herdr_create_task: the label-collision startup-workspace scenario (2026-07-02 incident) leaves the captain's live tab untouched"
 }
 
+# dock_companion_pane: add one extra pane to an existing tab in the stateful
+# fake's state, the way an installed plugin's creation hook docks its own pane
+# into a brand-new workspace's tab.
+dock_companion_pane() {  # <state-file> <tab-id> <workspace-id> <pane-id>
+  local state=$1 tab=$2 ws=$3 pane=$4 tmp="$1.tmp.$$"
+  jq --arg t "$tab" --arg w "$ws" --arg p "$pane" \
+    '.extra_panes = ((.extra_panes // []) + [{pane_id:$p, tab_id:$t, workspace_id:$w}])' \
+    "$state" > "$tmp" && mv "$tmp" "$state"
+}
+
+test_prune_removes_a_seeded_tab_holding_a_plugin_companion_pane() {
+  # An installed plugin's creation hook docks a companion pane into the
+  # brand-new workspace's seeded default tab. Closing one pane no longer
+  # empties that tab, so a prune that picked a pane by list position closed
+  # the plugin's pane and stranded the seeded shell - leaving a second tab
+  # that then failed the projection's exact-task-tab verification.
+  local dir log state fb raw container seeded wsid ids pane companion tabcount
+  dir="$TMP_ROOT/prune-companion"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state.json"; : > "$log"
+  fb=$(make_herdr_statefake "$dir")
+  raw=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" HERDR_SESSION=fmtest \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /proj' "$ROOT" ) \
+    || fail "container_ensure failed against the stateful fake"
+  container=${raw%%$'\t'*}
+  seeded=${raw#*$'\t'}
+  wsid=${container#*:}
+  [ -n "$seeded" ] || fail "expected a freshly created workspace to report a seeded default tab id"
+  companion="$wsid:pcompanion"
+  dock_companion_pane "$state" "$seeded" "$wsid" "$companion"
+  [ "$(jq -r --arg t "$seeded" '[(.extra_panes // [])[]|select(.tab_id==$t)]|length' "$state")" = 1 ] \
+    || fail "fixture did not dock a companion pane into the seeded tab"
+
+  ids=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" HERDR_SESSION=fmtest \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task "$1" "$2" /proj "$3"' "$ROOT" "$container" "fm-companiontest" "$seeded" ) \
+    || fail "create_task failed against the stateful fake"
+  read -r _ pane <<EOF
+$ids
+EOF
+  [ -n "$pane" ] || fail "create_task returned no pane id"
+
+  jq -e --arg t "$seeded" '.tabs[] | select(.tab_id == $t)' "$state" >/dev/null \
+    && fail "the seeded default tab survived its prune while holding a companion pane: $(jq -c '.tabs' "$state")"
+  [ "$(jq -r --arg t "$seeded" '[(.extra_panes // [])[]|select(.tab_id==$t)]|length' "$state")" = 0 ] \
+    || fail "the companion pane outlived the seeded tab it belonged to: $(jq -c '.extra_panes' "$state")"
+  tabcount=$(jq -r --arg w "$wsid" '[.tabs[]|select(.workspace_id==$w)]|length' "$state")
+  [ "$tabcount" = 1 ] \
+    || fail "expected only the task tab to remain, got $tabcount: $(jq -c '.tabs' "$state")"
+  jq -r --arg w "$wsid" '[.tabs[]|select(.workspace_id==$w)][0].label' "$state" | grep -qx 'fm-companiontest' \
+    || fail "the surviving tab should be the task tab, not the seeded default: $(jq -c '.tabs' "$state")"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f'"$pane" \
+    "the prune closed the task's own pane"
+  pass "herdr seeded prune: a seeded tab holding a plugin companion pane is removed whole, task pane untouched"
+}
+
+test_prune_refuses_a_seeded_tab_whose_companion_pane_is_working() {
+  # The working-agent refusal must cover every pane in the seeded tab, not
+  # only whichever one herdr happened to list first.
+  local dir log state fb raw container seeded wsid companion
+  dir="$TMP_ROOT/prune-companion-busy"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state.json"; : > "$log"
+  fb=$(make_herdr_statefake "$dir")
+  raw=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" HERDR_SESSION=fmtest \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /proj' "$ROOT" ) \
+    || fail "container_ensure failed against the stateful fake"
+  container=${raw%%$'\t'*}
+  seeded=${raw#*$'\t'}
+  wsid=${container#*:}
+  companion="$wsid:pcompanion"
+  dock_companion_pane "$state" "$seeded" "$wsid" "$companion"
+  # Only the COMPANION reports working; the seeded root pane is idle, so a
+  # first-pane-only check would have pruned straight through this.
+  fake_herdr_set_agent_status "$state" "$companion" working
+
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" HERDR_SESSION=fmtest \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_create_task "$1" "$2" /proj "$3"' "$ROOT" "$container" "fm-companionbusy" "$seeded" \
+    >/dev/null || fail "create_task failed against the stateful fake"
+
+  jq -e --arg t "$seeded" '.tabs[] | select(.tab_id == $t)' "$state" >/dev/null \
+    || fail "the seeded tab was pruned even though its companion pane reported a working agent"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''close'$'\x1f'"$companion" \
+    "the prune closed a companion pane hosting a working agent"
+  pass "herdr seeded prune: a working agent on any pane in the seeded tab refuses the whole prune"
+}
+
 test_prune_refuses_a_working_agent_pane_defense_in_depth() {
   # Defense in depth (not the primary safety mechanism): even for a
   # freshly-created workspace with a genuine non-empty seeded default tab id,
@@ -5353,6 +5455,8 @@ test_repeated_cycles_reuse_one_workspace_no_orphans
 test_adopted_workspace_never_prunes_default_tab
 test_label_collision_startup_workspace_leaves_live_tab_alone
 test_prune_refuses_a_working_agent_pane_defense_in_depth
+test_prune_removes_a_seeded_tab_holding_a_plugin_companion_pane
+test_prune_refuses_a_seeded_tab_whose_companion_pane_is_working
 test_create_task_refuses_duplicate_label
 test_create_task_refuses_duplicate_label_when_agent_live
 test_create_task_refuses_when_any_duplicate_label_is_live

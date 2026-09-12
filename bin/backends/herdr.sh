@@ -1876,23 +1876,62 @@ fm_backend_herdr_launcher_identity() {  # <session>
 # exists alongside it, never right after workspace creation - and this
 # function independently re-checks the tab count as a second layer.
 fm_backend_herdr_workspace_prune_seeded_default_tab() {  # <session> <workspace_id> <seeded_tab_id> [focus-preserving]
-  local session=$1 wsid=$2 tab_id=$3 close_mode=${4:-direct} tabs tab_count current_label pane_id agent_out agent_status
+  local session=$1 wsid=$2 tab_id=$3 close_mode=${4:-direct}
+  local tabs tab_count current_label panes tab_pane_ids pane_total pane_id agent_out agent_status sweep
   [ -n "$tab_id" ] || return 0
   tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || return 0
   tab_count=$(printf '%s' "$tabs" | jq -r '.result.tabs? // [] | length' 2>/dev/null)
   case "$tab_count" in ''|*[!0-9]*|0|1) return 0 ;; esac
   current_label=$(printf '%s' "$tabs" | jq -r --arg t "$tab_id" '.result.tabs[]? | select(.tab_id == $t) | .label' 2>/dev/null)
   [ "$current_label" = "1" ] || return 0
-  pane_id=$(fm_backend_herdr_pane_for_tab "$session" "$wsid" "$tab_id") || return 0
-  [ -n "$pane_id" ] || return 0
-  agent_out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>/dev/null)
-  agent_status=$(printf '%s' "$agent_out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null)
-  [ "$agent_status" = working ] && return 0
-  if [ "$close_mode" = focus-preserving ]; then
-    fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane_id"
-  else
-    fm_backend_herdr_cli "$session" pane close "$pane_id" >/dev/null 2>&1 || true
-  fi
+  # An installed plugin's creation hook can dock companion panes into this
+  # seeded tab, so the tab holds one pane only in the uncontended case and
+  # closing a single pane would leave it alive. Every pane addressed here is
+  # one herdr reports for THIS exact recorded tab id, never a list position:
+  # picking positionally closed the plugin's pane and stranded the seeded
+  # shell, which then failed the projection's exact-task-tab verification.
+  # The sweep is bounded because a hook can re-dock while panes are closing.
+  sweep=0
+  while [ "$sweep" -lt 8 ]; do
+    sweep=$((sweep + 1))
+    panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>/dev/null) || return 0
+    tab_pane_ids=$(printf '%s' "$panes" | jq -r --arg t "$tab_id" \
+      '.result.panes[]? | select(.tab_id == $t) | .pane_id' 2>/dev/null)
+    [ -n "$tab_pane_ids" ] || return 0
+    pane_total=$(printf '%s\n' "$tab_pane_ids" | grep -c '[^[:space:]]' || true)
+    case "$pane_total" in ''|*[!0-9]*) return 0 ;; esac
+    # Refuse the whole prune while ANY pane in the tab hosts a working agent,
+    # rather than only checking whichever pane happened to be listed first.
+    while IFS= read -r pane_id; do
+      [ -n "$pane_id" ] || continue
+      agent_out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>/dev/null)
+      agent_status=$(printf '%s' "$agent_out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null)
+      if [ "$agent_status" = working ]; then
+        return 0
+      fi
+    done <<EOF
+$tab_pane_ids
+EOF
+    while IFS= read -r pane_id; do
+      [ -n "$pane_id" ] || continue
+      if [ "$close_mode" = focus-preserving ]; then
+        # A focus-safety refusal (the active tab, an unprovable shell) must
+        # still reach the caller exactly as it did when one pane was closed.
+        fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane_id" || return $?
+      else
+        fm_backend_herdr_cli "$session" pane close "$pane_id" >/dev/null 2>&1 || true
+      fi
+    done <<EOF
+$tab_pane_ids
+EOF
+    # A lone pane IS the tab: closing it closed the tab, so no confirming
+    # re-read is owed and the uncontended sequence stays one list, one agent
+    # read, one close. Only a companion-pane shape needs another sweep.
+    if [ "$pane_total" -le 1 ]; then
+      return 0
+    fi
+  done
+  return 0
 }
 
 # fm_backend_herdr_workspace_ensure: the workspace this spawn's task tab

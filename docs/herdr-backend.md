@@ -110,6 +110,8 @@ The owning parent is the launcher's own exact workspace, resolved from the same 
 Projected children are never collapsed back into that parent; it is the placement and ordering reference the projection is bound under.
 The normal `fm-<id>` task tab is created in the exact new workspace returned by Herdr.
 Only the exact seeded default tab returned by the same workspace-create response can be pruned.
+Every pane in that exact tab is closed by the id Herdr reports for it rather than by list position, because an installed plugin's creation hook can dock a companion pane there and closing one positionally chosen pane then removed the plugin's pane and left the seeded shell behind, stranding a second tab that failed the convergence check below.
+A working agent on any pane in that tab refuses the whole prune, and a focus-safety refusal still propagates to the caller.
 Before and after create, prune, order, abort cleanup, and normal cleanup, Firstmate verifies exact workspace, tab, pane, and active-focus ids.
 An ambiguous response grants no mutation or cleanup authority.
 
@@ -181,6 +183,7 @@ Operational compromises:
 - A failed journal publication or projected workspace create stops that spawn instead of falling back flat, so a Herdr create failure surfaces as a spawn failure in every Herdr home rather than only in homes that opted in; every earlier degradation on the fresh projected-create path (no session server, contended presentation lock, absent or ambiguous parent) still warns and continues flat.
 - Recovery of an existing presentation journal deliberately refuses the spawn when the shared presentation lock is contended rather than falling back flat, and default-on makes that refusal reachable in any Herdr home.
 - Companion-pane attribution is registry-shaped, not per-pane, because Herdr exposes no pane-to-plugin binding; while a pane-injecting plugin is enabled, a pane that appeared inside the task's own tab for some other reason is tolerated up to that plugin's budget rather than identified, and only the exact task pane and tab are ever positively verified.
+- Cleanup still closes only the exact recorded task pane, so on a host running a pane-injecting plugin the companion pane keeps the tab alive and the disposable workspace is retained after its task ends; creation is fixed, and that retained-workspace case is tracked separately.
 - Existing layouts are not force-renamed or rearranged.
 - Missing or ambiguous restart bindings fall back to the ordinary home workspace while the old projection remains untouched.
 - Crashes, lost responses, failed exact-pane cleanup, or human renames can leave quarantined spaces; session start removes only the exact home-local, uniquely journal-correlated, childless idle-shell shape above.
