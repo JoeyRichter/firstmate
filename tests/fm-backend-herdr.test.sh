@@ -1892,13 +1892,145 @@ test_projection_create_never_closes_a_concurrent_same_label_tab() {
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }; fm_backend_herdr_projection_focus_restore() { return 0; }; fm_backend_herdr_projection_create_task /tmp/proj label fm-task-p2' "$ROOT" 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "a concurrent tab should prevent exact one-pane projection convergence"
-  assert_contains "$out" "did not converge to exactly one task pane" \
+  assert_contains "$out" "did not converge to its exact task tab" \
     "projection did not report the concurrent shape"
   assert_not_contains "$(cat "$log")" $'tab\x1fclose\x1fw9:t3' \
     "projection closed a concurrent same-label tab"
   assert_not_contains "$(cat "$log")" $'pane\x1fclose\x1fw9:p3' \
     "projection closed a concurrent same-label pane"
   pass "herdr presentation create: concurrent same-label tabs are never prune targets"
+}
+
+# run_projection_companion_case: drive fm_backend_herdr_projection_create_task
+# through the standard projected-create sequence, varying only the convergence
+# pane list and the plugin registry the companion-pane budget is read from.
+# Echoes the adapter's combined output; returns the adapter's status.
+# Writes the fake CLI's call log to <dir>/log so a case can assert whether the
+# registry was consulted at all.
+run_projection_companion_case() {  # <dir> <convergence-panes-json> [registry-json]
+  local dir=$1 conv_panes=$2 registry=${3:-} state resp log fb
+  state="$dir/state"; resp="$dir/responses"; log="$dir/log"
+  mkdir -p "$resp" "$state"; : > "$log"
+  printf '{"result":{"workspace":{"workspace_id":"w9"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' > "$resp/1.out"
+  printf '{"result":{"tab":{"tab_id":"w9:t2"},"root_pane":{"pane_id":"w9:p2"}}}\n' > "$resp/2.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1","workspace_id":"w9"},{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/3.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"},{"pane_id":"w9:p2","tab_id":"w9:t2"}]}}\n' > "$resp/4.out"
+  printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/5.out"
+  printf '{"result":{"pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9"}}}\n' > "$resp/6.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"1","workspace_id":"w9"},{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/7.out"
+  printf '{"error":{"code":"pane_not_found"}}\n' > "$resp/9.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t2","label":"fm-task-p2","workspace_id":"w9"}]}}\n' > "$resp/10.out"
+  printf '{"result":{"panes":%s}}\n' "$conv_panes" > "$resp/11.out"
+  [ -z "$registry" ] || printf '%s\n' "$registry" > "$resp/12.out"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
+    bash -c '. "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }
+      fm_backend_herdr_projection_focus_restore() { return 0; }
+      fm_backend_herdr_projection_create_task /tmp/proj label fm-task-p2' "$ROOT" 2>&1
+}
+
+# One companion pane docked into the task's own tab, as herdr-sidebar's
+# workspace.created/tab.created hooks do. Same registry shape the real plugin
+# publishes: enabled, one pane entrypoint, a pane-injecting hook.
+SIDEBAR_REGISTRY='{"result":{"plugins":[{"plugin_id":"herdr-sidebar","enabled":true,"panes":[{"id":"sidebar","placement":"split","title":"Sidebar"}],"events":[{"on":"pane.focused","platforms":["linux","macos"]},{"on":"tab.created","platforms":["linux","macos"]},{"on":"workspace.created","platforms":["linux","macos"]}],"platforms":["linux","macos"]}]}}'
+ONE_COMPANION='[{"pane_id":"w9:p2","tab_id":"w9:t2"},{"pane_id":"w9:p3","tab_id":"w9:t2","label":"Sidebar"}]'
+
+test_projection_create_tolerates_a_registered_plugin_companion_pane() {
+  local dir out status
+  dir="$TMP_ROOT/projection-companion-tolerated"
+  out=$(run_projection_companion_case "$dir" "$ONE_COMPANION" "$SIDEBAR_REGISTRY")
+  status=$?
+  [ "$status" -eq 0 ] \
+    || fail "a companion pane attributable to a registered plugin must still converge: $out"
+  assert_contains "$(cat "$dir/log")" $'plugin\x1flist\x1f--json' \
+    "convergence did not consult herdr's own plugin registry to attribute the extra pane"
+  assert_not_contains "$(cat "$dir/log")" $'pane\x1fclose\x1fw9:p3' \
+    "convergence must never close a plugin's companion pane"
+  pass "herdr presentation create: a registered plugin's companion pane converges without being touched"
+}
+
+test_projection_create_refuses_an_unattributable_companion_pane() {
+  local dir out status
+  dir="$TMP_ROOT/projection-companion-unattributable"
+  # The identical pane shape as the tolerated case above; only the registry
+  # differs, and this plugin hooks an event this create sequence never raises.
+  out=$(run_projection_companion_case "$dir" "$ONE_COMPANION" \
+    '{"result":{"plugins":[{"plugin_id":"only-worktree","enabled":true,"panes":[{"id":"pane"}],"events":[{"on":"worktree.created"},{"on":"worktree.opened"}]}]}}')
+  status=$?
+  [ "$status" -ne 0 ] \
+    || fail "an extra pane no registered plugin hook explains must refuse: $out"
+  assert_contains "$out" "retained 1 companion pane(s)" \
+    "refusal did not name the unattributed companion pane count"
+  assert_contains "$out" "only 0 can be attributed" \
+    "refusal did not report the zero attribution budget"
+  pass "herdr presentation create: the same extra pane refuses when no registered hook can explain it"
+}
+
+test_projection_create_refuses_a_disabled_plugins_companion_pane() {
+  local dir out status
+  dir="$TMP_ROOT/projection-companion-disabled"
+  out=$(run_projection_companion_case "$dir" "$ONE_COMPANION" \
+    '{"result":{"plugins":[{"plugin_id":"herdr-sidebar","enabled":false,"panes":[{"id":"sidebar"}],"events":[{"on":"workspace.created"}]}]}}')
+  status=$?
+  [ "$status" -ne 0 ] \
+    || fail "a disabled plugin must buy no companion-pane tolerance: $out"
+  assert_contains "$out" "only 0 can be attributed" \
+    "a disabled plugin must contribute nothing to the budget"
+  pass "herdr presentation create: a disabled plugin buys no companion-pane tolerance"
+}
+
+test_projection_create_bounds_companion_tolerance_to_declared_entrypoints() {
+  local dir out status two_companions
+  two_companions='[{"pane_id":"w9:p2","tab_id":"w9:t2"},{"pane_id":"w9:p3","tab_id":"w9:t2"},{"pane_id":"w9:p4","tab_id":"w9:t2"}]'
+  dir="$TMP_ROOT/projection-companion-over-budget"
+  out=$(run_projection_companion_case "$dir" "$two_companions" "$SIDEBAR_REGISTRY")
+  status=$?
+  [ "$status" -ne 0 ] \
+    || fail "two companion panes must exceed a one-entrypoint plugin's budget: $out"
+  assert_contains "$out" "retained 2 companion pane(s) beside its exact task pane but only 1" \
+    "refusal did not report the exceeded budget"
+  # Same two panes, but a registry declaring two pane entrypoints explains both.
+  dir="$TMP_ROOT/projection-companion-within-budget"
+  out=$(run_projection_companion_case "$dir" "$two_companions" \
+    '{"result":{"plugins":[{"plugin_id":"two-pane","enabled":true,"panes":[{"id":"a"},{"id":"b"}],"events":[{"on":"tab.created"}]}]}}')
+  status=$?
+  [ "$status" -eq 0 ] \
+    || fail "two companion panes must converge under a two-entrypoint plugin's budget: $out"
+  pass "herdr presentation create: companion tolerance is bounded by the registry's declared pane entrypoints"
+}
+
+test_projection_create_requires_its_exact_task_pane_before_any_attribution() {
+  local dir out status
+  dir="$TMP_ROOT/projection-companion-task-pane-gone"
+  # The created task pane is absent and two strangers hold the task tab. A
+  # generous registry must not rescue this: identity is checked first.
+  out=$(run_projection_companion_case "$dir" \
+    '[{"pane_id":"w9:p7","tab_id":"w9:t2"},{"pane_id":"w9:p8","tab_id":"w9:t2"}]' \
+    "$SIDEBAR_REGISTRY")
+  status=$?
+  [ "$status" -ne 0 ] \
+    || fail "a missing exact task pane must refuse regardless of the plugin registry: $out"
+  assert_contains "$out" "did not converge to its exact task pane" \
+    "refusal did not report the missing exact task pane"
+  assert_not_contains "$(cat "$dir/log")" $'plugin\x1flist\x1f--json' \
+    "task-pane identity must be settled before the registry is consulted"
+  pass "herdr presentation create: a missing exact task pane refuses before any plugin attribution"
+}
+
+test_projection_create_refuses_when_the_plugin_registry_is_unreadable() {
+  local dir out status
+  dir="$TMP_ROOT/projection-companion-registry-unreadable"
+  # No 12.out: the fake returns empty stdout, modelling a client whose
+  # `plugin list --json` is absent or unreadable. That must degrade to the
+  # historical exactly-one-pane rule, never to blanket tolerance.
+  out=$(run_projection_companion_case "$dir" "$ONE_COMPANION")
+  status=$?
+  [ "$status" -ne 0 ] \
+    || fail "an unreadable plugin registry must not grant companion tolerance: $out"
+  assert_contains "$out" "only 0 can be attributed" \
+    "an unreadable registry must yield a zero budget"
+  pass "herdr presentation create: an unreadable plugin registry keeps the strict one-pane rule"
 }
 
 test_projection_focus_snapshot_requires_exact_workspace_and_tab() {
@@ -5248,6 +5380,12 @@ test_projection_journal_is_atomic_and_uses_128_bit_token
 test_projection_journal_v2_binds_and_advances_exact_endpoint
 test_projection_create_uses_exact_response_ids_and_leaves_one_task_pane
 test_projection_create_never_closes_a_concurrent_same_label_tab
+test_projection_create_tolerates_a_registered_plugin_companion_pane
+test_projection_create_refuses_an_unattributable_companion_pane
+test_projection_create_refuses_a_disabled_plugins_companion_pane
+test_projection_create_bounds_companion_tolerance_to_declared_entrypoints
+test_projection_create_requires_its_exact_task_pane_before_any_attribution
+test_projection_create_refuses_when_the_plugin_registry_is_unreadable
 test_projection_focus_snapshot_requires_exact_workspace_and_tab
 test_projection_close_restores_exact_prior_focus
 test_projection_close_refuses_active_tab

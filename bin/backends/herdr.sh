@@ -2463,6 +2463,123 @@ EOF
   printf '%s %s' "$tab_id" "$pane_id"
 }
 
+# fm_backend_herdr_client_version: the installed client's version string for
+# refusal messages, or "unknown" when status cannot be read. Never fails.
+fm_backend_herdr_client_version() {
+  local version
+  version=$(herdr status --json 2>/dev/null | jq -r '.client.version // empty' 2>/dev/null)
+  printf '%s' "${version:-unknown}"
+}
+
+# fm_backend_herdr_projection_companion_pane_budget: how many extra panes a
+# freshly created presentation workspace may hold beside its exact task pane
+# and still be explained, read from Herdr's own live plugin registry.
+#
+# Herdr has no per-pane plugin attribution to ask instead. Protocol 22's
+# PaneInfo carries no owning-plugin field, `pane list`, `pane get`, and
+# `api snapshot` all return that same field set, and the PluginPaneInfo that
+# does bind plugin_id and entrypoint to a pane exists only in the immediate
+# plugin_pane_open/focus/close response, never in queryable state. A plugin
+# need not even use that path: herdr-sidebar docks its companion with a plain
+# `pane split`, so it is structurally an ordinary pane.
+#
+# The pane's own content cannot stand in for attribution either, because it
+# arrives after this check: the companion pane does not exist yet at the
+# moment the task tab is created, then appears with a null label and no
+# tokens, and only later reports a label and its plugin-namespaced tokens.
+# A check that required the extra pane to identify itself would refuse or
+# admit the same workspace depending on timing.
+#
+# So attribution is registry-shaped rather than pane-shaped: a currently
+# ENABLED plugin that declares at least one pane entrypoint AND hooks an event
+# this create sequence actually raises is expected to inject that many panes,
+# and each such entrypoint buys exactly one tolerated companion pane. A plugin
+# hooking only events Firstmate never triggers here (worktree.*) buys none.
+# An unreadable registry, an older client without the subcommand, or a
+# malformed count yields 0, which is the historical exactly-one-pane rule.
+fm_backend_herdr_projection_companion_pane_budget() {  # <session>
+  local session=$1 platform budget
+  case "$(uname -s 2>/dev/null)" in
+    Darwin) platform=macos ;;
+    Linux) platform=linux ;;
+    MINGW*|MSYS*|CYGWIN*) platform=windows ;;
+    *) platform='' ;;
+  esac
+  budget=$(fm_backend_herdr_cli "$session" plugin list --json 2>/dev/null \
+    | jq -r --arg platform "$platform" '
+      def applies:
+        ((.platforms | type) != "array")
+        or ($platform == "")
+        or ((.platforms | index($platform)) != null);
+      ["workspace.created", "tab.created", "pane.created",
+       "workspace.focused", "tab.focused", "pane.focused"] as $injecting
+      | (.result.plugins // null) as $plugins
+      | if ($plugins | type) != "array" then 0 else
+          [ $plugins[]
+            | select(.enabled == true)
+            | select((.panes | type) == "array" and (.panes | length) > 0)
+            | select([ .events[]?
+                       | select(applies)
+                       | ((.on // "") | gsub("_"; "."))
+                       | select(. as $on | ($injecting | index($on)) != null)
+                     ] | length > 0)
+            | (.panes | length)
+          ] | add // 0
+        end
+    ' 2>/dev/null) || budget=0
+  case "$budget" in ''|*[!0-9]*) budget=0 ;; esac
+  printf '%s' "$budget"
+}
+
+# fm_backend_herdr_projection_convergence_verify: does this projected workspace
+# hold exactly the one task endpoint Firstmate created, and nothing it cannot
+# explain? Read-only; grants no mutation or cleanup authority.
+#
+# Identity, not raw counts, decides. A concurrent task arrives as its own TAB,
+# so the exact-one-task-tab check is what still catches foreign content, while
+# extra PANES inside the task's own tab are what a plugin legitimately adds.
+fm_backend_herdr_projection_convergence_verify() {  # <session> <workspace> <seeded-tab> <task-tab> <task-pane>
+  local session=$1 workspace=$2 seeded_tab=$3 task_tab=$4 task_pane=$5
+  local tabs panes pane_count companions budget
+  tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$workspace" 2>/dev/null) || {
+    echo "error: could not verify the disposable herdr presentation workspace shape" >&2
+    return 1
+  }
+  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$workspace" 2>/dev/null) || {
+    echo "error: could not verify the disposable herdr presentation pane shape" >&2
+    return 1
+  }
+  if ! printf '%s' "$tabs" | jq -e '(.result.tabs | type) == "array"' >/dev/null 2>&1 \
+     || ! printf '%s' "$panes" | jq -e '(.result.panes | type) == "array"' >/dev/null 2>&1; then
+    echo "error: could not parse the disposable herdr presentation workspace shape" >&2
+    return 1
+  fi
+  if ! printf '%s' "$tabs" | jq -e --arg task "$task_tab" --arg seeded "$seeded_tab" \
+       '(.result.tabs | length) == 1
+        and .result.tabs[0].tab_id == $task
+        and ([.result.tabs[] | select(.tab_id == $seeded)] | length) == 0' >/dev/null 2>&1; then
+    echo "error: disposable herdr presentation workspace did not converge to its exact task tab" >&2
+    return 1
+  fi
+  if ! printf '%s' "$panes" | jq -e --arg pane "$task_pane" --arg tab "$task_tab" \
+       '([.result.panes[] | select(.pane_id == $pane and .tab_id == $tab)] | length) == 1
+        and ([.result.panes[] | select(.tab_id != $tab)] | length) == 0' >/dev/null 2>&1; then
+    echo "error: disposable herdr presentation workspace did not converge to its exact task pane" >&2
+    return 1
+  fi
+  pane_count=$(printf '%s' "$panes" | jq -r '.result.panes | length' 2>/dev/null)
+  case "$pane_count" in ''|*[!0-9]*) pane_count=0 ;; esac
+  companions=$((pane_count - 1))
+  if [ "$companions" -gt 0 ]; then
+    budget=$(fm_backend_herdr_projection_companion_pane_budget "$session")
+    if [ "$companions" -gt "$budget" ]; then
+      echo "error: disposable herdr presentation workspace retained $companions companion pane(s) beside its exact task pane but only $budget can be attributed to a registered herdr plugin (herdr $(fm_backend_herdr_client_version)); refusing an unexplained shape" >&2
+      return 1
+    fi
+  fi
+  return 0
+}
+
 # fm_backend_herdr_projection_create_task: create one disposable presentation
 # workspace and its normal fm-<id> task tab without looking up, adopting, or
 # reusing any existing workspace.
@@ -2478,8 +2595,14 @@ EOF
 # CLEANUP_SAFE becomes 1 only after both creates returned complete exact IDs.
 # A missing, failed, or malformed create response stays ambiguous and grants no
 # cleanup authority.
+# Convergence is checked by identity, not by raw counts: the workspace must
+# hold exactly the one created task tab with the seeded tab gone, the exact
+# created task pane must be present in that tab, and no pane may sit outside
+# it. Extra panes in the task's own tab are tolerated only up to
+# fm_backend_herdr_projection_companion_pane_budget, so a concurrent task's
+# tab and an otherwise unexplained pane both still refuse.
 fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-label>
-  local cwd=$1 workspace_label=$2 task_label=$3 session out tabs panes tab_count pane_count focus_before active_tab
+  local cwd=$1 workspace_label=$2 task_label=$3 session out focus_before active_tab
   FM_BACKEND_HERDR_PROJECTION_SESSION=""
   FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID=""
   FM_BACKEND_HERDR_PROJECTION_SEEDED_TAB_ID=""
@@ -2563,31 +2686,12 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
     }
   fi
 
-  tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID" 2>/dev/null) || {
-    echo "error: could not verify the disposable herdr presentation workspace shape" >&2
-    return 1
-  }
-  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID" 2>/dev/null) || {
-    echo "error: could not verify the disposable herdr presentation pane shape" >&2
-    return 1
-  }
-  if ! printf '%s' "$tabs" | jq -e '(.result.tabs | type) == "array"' >/dev/null 2>&1 \
-     || ! printf '%s' "$panes" | jq -e '(.result.panes | type) == "array"' >/dev/null 2>&1; then
-    echo "error: could not parse the disposable herdr presentation workspace shape" >&2
-    return 1
-  fi
-  tab_count=$(printf '%s' "$tabs" | jq -r '.result.tabs | length' 2>/dev/null)
-  pane_count=$(printf '%s' "$panes" | jq -r '.result.panes | length' 2>/dev/null)
-  if [ "$tab_count" != 1 ] || [ "$pane_count" != 1 ] \
-     || ! printf '%s' "$tabs" | jq -e --arg task "$FM_BACKEND_HERDR_PROJECTION_TAB_ID" \
-       --arg seeded "$FM_BACKEND_HERDR_PROJECTION_SEEDED_TAB_ID" \
-       '.result.tabs[0].tab_id == $task and ([.result.tabs[] | select(.tab_id == $seeded)] | length) == 0' >/dev/null 2>&1 \
-     || ! printf '%s' "$panes" | jq -e --arg pane "$FM_BACKEND_HERDR_PROJECTION_PANE_ID" \
-       --arg tab "$FM_BACKEND_HERDR_PROJECTION_TAB_ID" \
-       '.result.panes[0].pane_id == $pane and .result.panes[0].tab_id == $tab' >/dev/null 2>&1; then
-    echo "error: disposable herdr presentation workspace did not converge to exactly one task pane" >&2
-    return 1
-  fi
+  fm_backend_herdr_projection_convergence_verify \
+    "$session" \
+    "$FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID" \
+    "$FM_BACKEND_HERDR_PROJECTION_SEEDED_TAB_ID" \
+    "$FM_BACKEND_HERDR_PROJECTION_TAB_ID" \
+    "$FM_BACKEND_HERDR_PROJECTION_PANE_ID" || return 1
   return 0
 }
 

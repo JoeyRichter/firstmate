@@ -113,6 +113,14 @@ Only the exact seeded default tab returned by the same workspace-create response
 Before and after create, prune, order, abort cleanup, and normal cleanup, Firstmate verifies exact workspace, tab, pane, and active-focus ids.
 An ambiguous response grants no mutation or cleanup authority.
 
+Convergence after that create is verified by identity rather than by raw counts, because an installed plugin can legitimately dock its own companion pane into a brand-new workspace.
+The new workspace must hold exactly the one created task tab with the seeded tab gone, the exact created task pane must be present in that tab, and no pane may sit outside it; a concurrent task arrives as its own tab, so that tab check is what still catches foreign content.
+Extra panes inside the task's own tab are tolerated only up to a budget read from Herdr's own live plugin registry: each currently enabled plugin that declares at least one pane entrypoint and hooks an event this create sequence actually raises buys one tolerated companion pane.
+A plugin hooking only events Firstmate never triggers here, a disabled plugin, an unreadable registry, and a client with no `plugin list --json` all buy nothing, which leaves the strict one-pane rule in force.
+Herdr exposes no per-pane plugin attribution to ask instead: protocol 22's pane records carry no owning-plugin field on any read path, the plugin-pane binding exists only in the immediate open response, and a plugin may dock its pane with a plain split anyway.
+The companion pane's own label and tokens cannot stand in for attribution either, because it is docked asynchronously and is absent at the moment the task tab is created, so a content-based test would admit or refuse the same workspace depending on timing.
+`bin/backends/herdr.sh`'s `fm_backend_herdr_projection_convergence_verify` owns the verdict and its `fm_backend_herdr_projection_companion_pane_budget` owns the registry read, while `tests/fm-herdr-companion-pane-live-e2e.test.sh` is the live guard that refreshes this claim against the installed Herdr and plugins.
+
 Protocol 16 exposes `workspace.move` over the named session socket but no CLI subcommand.
 `bin/backends/herdr-workspace-move.py` sends only that whitelisted method and verifies the complete returned workspace order.
 Projected children are placed in one contiguous block immediately after their owning home when the session layout, protocol, socket, `python3`, and machine-private per-session lock are all verifiable.
@@ -172,6 +180,7 @@ Operational compromises:
 - Grouping is best-effort; only an exact same-identity version 2 binding survives a Herdr restart in place.
 - A failed journal publication or projected workspace create stops that spawn instead of falling back flat, so a Herdr create failure surfaces as a spawn failure in every Herdr home rather than only in homes that opted in; every earlier degradation on the fresh projected-create path (no session server, contended presentation lock, absent or ambiguous parent) still warns and continues flat.
 - Recovery of an existing presentation journal deliberately refuses the spawn when the shared presentation lock is contended rather than falling back flat, and default-on makes that refusal reachable in any Herdr home.
+- Companion-pane attribution is registry-shaped, not per-pane, because Herdr exposes no pane-to-plugin binding; while a pane-injecting plugin is enabled, a pane that appeared inside the task's own tab for some other reason is tolerated up to that plugin's budget rather than identified, and only the exact task pane and tab are ever positively verified.
 - Existing layouts are not force-renamed or rearranged.
 - Missing or ambiguous restart bindings fall back to the ordinary home workspace while the old projection remains untouched.
 - Crashes, lost responses, failed exact-pane cleanup, or human renames can leave quarantined spaces; session start removes only the exact home-local, uniquely journal-correlated, childless idle-shell shape above.

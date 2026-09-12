@@ -1080,6 +1080,84 @@ ok - forced secondmate teardown retains Herdr child identity until exact pane di
 ok - forced teardown retains a nested secondmate home and its grandchild's Herdr identity when the grandchild close is unconfirmed
 ```
 
+### Presentation companion panes
+
+Whether a freshly projected workspace converges depends on what the installed plugins actually dock into it, so the convergence check tolerates extra panes only up to a budget read from Herdr's own live plugin registry.
+
+Measured on 2026-09-11 against Herdr 0.9.0 protocol 22, the installed client reports no per-pane plugin attribution on any read path.
+`PaneInfo` carries `agent`, `agent_session`, `agent_status`, `cwd`, `display_agent`, `focused`, `foreground_cwd`, `label`, `pane_id`, `revision`, `scroll`, `state_labels`, `tab_id`, `terminal_id`, `terminal_title`, `terminal_title_stripped`, `title`, `tokens`, and `workspace_id`, and no owning-plugin field; `pane list`, `pane get`, and `api snapshot` all return that same set.
+The `PluginPaneInfo` that does bind `plugin_id` and `entrypoint` to a pane appears only in the immediate `plugin_pane_open`, `plugin_pane_focused`, and `plugin_pane_closed` responses, never in queryable state, and a plugin need not use that path at all: herdr-sidebar 0.11.0 docks its companion with a plain `pane split`, then `pane run` and `pane rename`.
+So the registry, not the pane, is the attribution source.
+
+The companion pane also cannot identify itself at check time.
+Sampling a guarded `fm-lab-` session every 1.5 s immediately after one `tab create` showed the companion pane absent from the first sample entirely, then present with `label` `Sidebar` and the self-reported `tokens` keys `herdr-sidebar-explorer` and `herdr-sidebar-git`:
+
+```text
+sample 0: [('w1:p5', 'w1:t3', None, [])]
+sample 1: [('w1:p6', 'w1:t3', 'Sidebar', ['herdr-sidebar-explorer', 'herdr-sidebar-git'])]
+```
+
+Those tokens come from `pane report-metadata`, which is display-only metadata any process may set, and the plugin's own hook waits up to six seconds for its first token to land.
+A content-based test would therefore admit or refuse the same workspace depending on timing, which is why attribution is registry-shaped.
+
+The same lab session reproduced the failure the budget fixes, mirroring the adapter's create sequence by hand.
+After `workspace create`, `tab create`, and the seeded-tab prune, the workspace held one tab and two panes:
+
+```text
+tab_count  = 1    (check requires 1)
+pane_count = 2    (check requires 1)  <-- REFUSAL
+   tab w1:t2 label= 'fm-repro'
+   pane w1:p4 tab= w1:t2 label= 'Sidebar'
+   pane w1:p3 tab= w1:t2 label= None
+```
+
+With that plugin set installed on 2026-09-11 the registry budget resolved to 1, covering exactly what Herdr docked: herdr-sidebar 0.11.0 was enabled, declared one pane entrypoint, and hooked `pane.focused`, `tab.created`, `tab.focused`, and `workspace.created`; `persiyanov.reviewr` 0.36.2 declared a pane entrypoint but hooked only `worktree.created` and `worktree.opened`, which this create sequence never raises, so it contributed 0; and `zenbu-labs.terminal-browser` 0.1.1 declared no panes or events, so it contributed 0.
+The budget is a live read, so it tracks the installed set rather than that snapshot: with herdr-sidebar removed later the same day the same helper returned 0, which is the strict one-pane rule, and the live guard below reports an explicit skip rather than a pass once no pane-injecting plugin remains.
+
+Refresh this entry with the default-on guard, which assembles the real projected shape with real Herdr calls, waits for the installed plugin to dock its own companion pane into the task tab, asks the production verifier for its verdict, and fails naming both versions:
+
+```sh
+tests/fm-herdr-companion-pane-live-e2e.test.sh
+```
+
+Observed output on 2026-09-11, reproduced on three consecutive runs:
+
+```text
+ok - real Herdr lab: herdr-sidebar docked 1 companion pane(s) into the projected task tab (herdr 0.9.0, herdr-sidebar 0.11.0)
+ok - real Herdr lab: convergence accepts 1 real companion pane(s) beside the exact task pane (herdr 0.9.0, herdr-sidebar 0.11.0)
+ok - real Herdr lab: the live registry attributes 1 companion pane(s), covering what herdr-sidebar actually docked (herdr 0.9.0, herdr-sidebar 0.11.0)
+ok - real Herdr lab: convergence still refuses 2 pane(s) against a live budget of 1 (herdr 0.9.0, herdr-sidebar 0.11.0)
+ok - real Herdr lab companion-pane guard complete (herdr 0.9.0, herdr-sidebar 0.11.0)
+```
+
+That guard refuses a vacuous pass twice over: it fails rather than passing when the plugin docks no companion pane at all, and it then splits the task pane past the live budget and requires the same real workspace to refuse, so the bound is proved against real Herdr rather than only in fixtures.
+It measures the verdict on a settled workspace instead of racing the plugin, because the companion pane does not exist yet when the task tab is created.
+Once herdr-sidebar was uninstalled later on 2026-09-11 the guard reported `skip: no enabled pane-injecting Herdr plugin installed`, which is the intended refusal to report a pass that checked nothing.
+
+The whole real-Herdr lane was measured three ways on 2026-09-11 to separate this change from the installed plugins:
+
+```sh
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh bin/fm-test-run.sh --family real-herdr-gated
+```
+
+| Installed plugin set | Adapter | `real-herdr-gated` result |
+|---|---|---|
+| herdr-sidebar 0.11.0 enabled | before this change | `count=16 failed=7` |
+| herdr-sidebar 0.11.0 enabled | after this change | `count=16 failed=7`, the identical seven scripts |
+| no pane-injecting plugin | after this change | `count=16 failed=0` |
+
+The identical seven under an enabled pane-injecting plugin, and zero once it is removed, together place those failures on the plugin rather than on this change.
+They are not companion-pane refusals: they are assertions about closing one pane emptying its container, about husk and workspace leaks, and about focus, which a plugin's extra pane and its own focus call both break.
+The seeded-tab prune is the nearest one to this section, because it resolves which pane to close positionally rather than by the exact seeded pane id it already holds, so a plugin pane docked into the seeded tab is closed instead and that tab survives to fail the exact-task-tab check above.
+
+The budget arithmetic and every refusal branch are pinned portably with no Herdr installed:
+
+```sh
+tests/fm-backend-herdr.test.sh
+```
+
+Observed guarantees: one companion pane attributable to an enabled, pane-injecting, pane-declaring plugin converges and is never closed; the identical pane shape refuses when the only registered plugin hooks events this sequence never raises, when that plugin is disabled, and when the registry is unreadable; tolerance is bounded by declared pane entrypoints, so two companion panes refuse against a one-entrypoint registry and converge against a two-entrypoint one; a missing exact task pane refuses before the registry is consulted at all; and a concurrent task's tab still refuses on tab identity.
+
 ### Composer and operational input
 
 Real captures verified these active distinctions:
