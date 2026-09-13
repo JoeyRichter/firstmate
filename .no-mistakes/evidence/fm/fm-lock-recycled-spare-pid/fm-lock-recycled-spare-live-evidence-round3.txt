@@ -1,0 +1,116 @@
+=== Live evidence (round 3 / final): fm/fm-lock-recycled-spare-pid ===
+Host: CMXGJ07L2LJ9V   Captured: Sun Sep 13 01:47:12 PDT 2026
+Base commit:   0962d4a02375986894b45c366b36b452e1abc948 (pre-fix)
+Target commit: 91eae5528e76e4e5f1a98bc68eef6aa43fd5af3c (final, includes the find_pid
+               comm-anchor fix that a prior test round found missing)
+
+This round independently re-drove the core scenarios against REAL, currently-running,
+unstubbed Claude Code 2.1.270 daemon processes already present on this host (this
+machine runs many concurrent Claude Code sessions/worktrees), plus one real crafted
+decoy process. No fakebin/ps stub was used anywhere in this section.
+
+### 1. bin/fm-lock.sh CLI, end to end, against a real live recycled-spare pid ###
+Real process at capture time:
+  pid 8307  comm="claude bg-pty-host"
+  args="claude bg-pty-host --bg-pty-host /tmp/cc-daemon-502/3b74777c/spare/722ef1e1.pty.sock
+        200 50 -- /Users/joseph.richter/.local/share/claude/versions/2.1.270
+        --bg-spare /tmp/cc-daemon-502/3b74777c/spare/722ef1e1.claim.sock"
+  (still alive at every check below)
+
+  FM_STATE_OVERRIDE=<isolated tmp dir>/state; state/.lock contains "8307"
+    BASE   `bash fm-lock.sh status` -> "lock: held by live harness pid 8307"   <- reproduces
+           the exact reported bug: a stale lock naming a recycled spare is never reclaimed.
+    TARGET `bash fm-lock.sh status` -> "lock: stale (pid 8307 dead or not a harness)"
+
+  Same isolated state dir, lock instead naming a real active harness pid (88729, this very
+  gate step's own live ancestry pid, confirmed via fm_harness_ancestry_pid against my own
+  real process tree: bash(13894) -> zsh(13892) -> claude(88729) -> no-mistakes daemon(80346)
+  -> launchd(1), widening stops at 80346 since it is not harness-named):
+    TARGET `bash fm-lock.sh status` -> "lock: held by live harness pid 88729"
+
+### 2. fm_harness_pid_alive() library-level, real pid, BASE vs TARGET back to back ###
+  pid 98308 (fresh recycled spare, verified still alive after both checks):
+    BASE=ALIVE   TARGET=DEAD
+  (Same result independently reproduced against pids 89573, 18846/22685 from an earlier
+   round's capture, and 8307 above - the daemon continuously recycles new spare pids on
+   this host, and every one checked shows the same BASE=ALIVE / TARGET=DEAD split.)
+
+### 3. fm_harness_ancestry_pid() (lock-ACQUISITION path) against this step's own real
+    ancestry - confirms it resolves the genuinely active pid and structurally cannot
+    reach a recycled spare (a spare is always daemon/init-parented, never an ancestor) ###
+  fm_harness_ancestry_pids -> 88729
+  fm_harness_ancestry_pid  -> 88729   (never a spare pid; consistent with every spare pid
+                                        observed on this host being parented by the daemon
+                                        pid or 1, not by anything in this ancestry chain)
+
+### 4. Round-1 regression re-verified live: find_pid's comm-anchor fix (commit 91eae55) ###
+A prior test round found tests/fm-session-lock-spare-live-e2e.test.sh's find_pid("spare")
+could false-match a non-harness process merely because its argv TEXT contained
+"--bg-spare ...claim.sock" (e.g. this gate's own orchestrator quoting the bug description).
+Reproduced fresh with a real, live, crafted decoy process (not a stub):
+  `/tmp/decoy_proc.sh --bg-spare /tmp/decoy-spare/fake.claim.sock &`
+  -> real pid, comm="bash", args="bash /tmp/decoy_proc.sh --bg-spare /tmp/decoy-spare/fake.claim.sock"
+
+  OLD find_pid matching logic (pre-91eae55, args-only, no comm check):
+    decoy MATCHES as "spare"   <- reproduces the round-1 false positive against a real process
+  NEW find_pid matching logic (current, anchored on fm_harness_process_matches(comm,args)):
+    decoy correctly EXCLUDED (comm "bash" never matches FM_HARNESS_RE)
+
+  Confirmed the anchor is not over-broad: the same NEW logic still matches a genuine live
+  recycled spare (pid 8307, comm "claude bg-pty-host") found on the host at the same time.
+
+Decoy process was killed and its script file removed immediately after use; no residue.
+
+### 5. Adversarial edge cases, direct function calls against bin/fm-session-lock-lib.sh
+    (fm_harness_claude_args_are_idle_spare) - covers shapes not observed on this host ###
+  recycled spare, no --session-id                                    -> idle-spare (excluded)
+  active host, space-form "--session-id " + spurious bg-spare text    -> not idle-spare (kept alive)
+  active host, EQUALS-form "--session-id=" + spurious bg-spare text   -> not idle-spare (kept alive)
+  ordinary active host, no bg-spare at all                            -> not idle-spare (kept alive)
+  truncated argv that lost --bg-spare                                 -> not idle-spare (fails open)
+
+### 6. Deterministic suite: tests/fm-session-lock-ancestry.test.sh (all pass, incl. the
+    new recycled-spare-vs-active-host case) ###
+ok - session-lock: a version-named Claude Code session is identified from its install path and argv[0]
+ok - session-lock: a harness that is pid 1 of its own namespace is examined, not skipped
+ok - session-lock: ordinary script paths under a harness directory are not harness processes
+ok - session-lock: ownership stops at the first non-harness gap above the contiguous run
+ok - session-lock: a live version-named session holding the lock is not mistaken for a stale owner
+ok - session-lock: a recycled unclaimed bg-spare host is not live while an active bg-pty-host still is
+ok - session-lock e2e: a version-named session claims the home and arms supervision
+ok - session-lock e2e: a session parented by a harness-named daemon claims the home and arms supervision
+ok - session-lock e2e: a version-named session under a harness-named daemon keeps its own lock
+
+### 7. Shipped live-e2e guard tests/fm-session-lock-spare-live-e2e.test.sh, run as-is ###
+  default (no forced-run var): `bash tests/fm-session-lock-spare-live-e2e.test.sh`
+    -> first line "skip: live: tmux absent", exit 0  (tmux is not installed on this host,
+       and installing it is outside this test phase's allowed scope, so the shipped
+       tmux+claude launch path itself could not be driven this round; see testing_summary)
+  forced run: `FM_SESSION_LOCK_SPARE_LIVE=1 bash tests/fm-session-lock-spare-live-e2e.test.sh`
+    -> "not ok - FM_SESSION_LOCK_SPARE_LIVE was requested but tmux is not installed", exit 1
+       (confirms the shared fm_live_gate forced-run contract still hard-fails rather than
+       silently skipping when the primary control var is set and a required tool is absent)
+
+### 8b. Checked whether the find_pid comm-anchor (section 4) could also break the
+    "session" branch, not just fix the "spare" branch ###
+  fm_harness_process_matches's first evidence rule is a plain regex SUBSTRING match on
+  comm alone (FM_HARNESS_RE), returning a match before ever inspecting args. A real
+  bg-pty-host process has comm "claude bg-pty-host" whether it is actively hosting a
+  session or sitting recycled in the idle pool - same comm either way, confirmed directly
+  above: genuine live spare pid 8307 (section 4) and the deterministic suite's own explicit
+  assertion (section 6's test_recycled_spare_is_not_live_but_active_host_is, which asserts
+  `fm_harness_process_matches "claude bg-pty-host" "claude bg-pty-host --session-id f1
+  --resume /x"` matches) both pass with the identical comm string. So the anchor can only
+  ever exclude a NON-claude-named comm (exactly the round-1 false-positive class fixed in
+  section 4); it cannot discriminate session vs. spare argv shapes and so cannot have
+  regressed the session branch.
+
+### 8. Not independently reproduced live this round: a genuinely active (--session-id)
+    bg-pty-host in the wild ###
+  Two trivial background probe agents were launched specifically to try to catch the
+  daemon holding a bg-pty-host in the actively-claimed state; a parallel tight-poll watcher
+  (50ms interval, 25s window, sourcing the real library and calling fm_harness_pid_alive
+  the instant a --session-id host was seen) caught none - each probe's underlying host
+  process turned over faster than the poll window in both attempts. This shape is instead
+  covered by tests/fm-session-lock-ancestry.test.sh's pid 510 case and by section 5's
+  direct-function equals/space conjunct checks above.

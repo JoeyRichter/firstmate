@@ -1,0 +1,77 @@
+=== Live evidence: fm/fm-lock-recycled-spare-pid ===
+Host: CMXGJ07L2LJ9V   Captured: Sun Sep 13 01:26:03 PDT 2026
+Base commit:   0962d4a02375986894b45c366b36b452e1abc948 (pre-fix)
+Target commit: 7a91c7c52eae99b955104a2443d1ef8d48aa8b3d (fix)
+
+### 1. Regression reproduction against REAL, currently-running, unstubbed Claude Code
+    2.1.269/2.1.270 processes on this host (no fakes at all in this section) ###
+
+Real process table at capture time:
+17199     1 /Users/joseph.richter/.local/share/claude/ClaudeCode.app/Contents/MacOS/claude --bg-pty-host /tmp/cc-daemon-502/3b74777c/pty/f170ee2e.sock 189 60 -- /Users/joseph.richter/.local/share/clau
+18846     1 claude bg-pty-host --bg-pty-host /tmp/cc-daemon-502/3b74777c/spare/12595142.pty.sock 200 50 -- /Users/joseph.richter/.local/share/claude/versions/2.1.269 --bg-spare /tmp/cc-daemon-502/3b74
+22685 88303 claude bg-pty-host --bg-pty-host /tmp/cc-daemon-502/3b74777c/spare/cb373e2e.pty.sock 200 50 -- /Users/joseph.richter/.local/share/claude/versions/2.1.270 --bg-spare /tmp/cc-daemon-502/3b74
+
+fm_harness_pid_alive() verdict, same real pids, BASE lib vs TARGET lib (captured back-to-back):
+  pid 17199 [actively-hosting session (--session-id)]  still-alive-now=yes  BASE=LIVE  TARGET=LIVE
+  pid 18846 [recycled idle spare (--bg-spare, no --session-id)]  still-alive-now=yes  BASE=LIVE  TARGET=NOTLIVE
+  pid 22685 [recycled idle spare (--bg-spare, no --session-id)]  still-alive-now=yes  BASE=LIVE  TARGET=NOTLIVE
+
+  => Pre-fix, both real recycled spares (18846, 22685) were misclassified LIVE, exactly
+     reproducing the reported stuck-lock bug. Post-fix, they classify NOT LIVE while the
+     real active session (17199) still classifies LIVE.
+
+### 2. bin/fm-lock.sh CLI surface (isolated FM_STATE_OVERRIDE, targeting the same real pids) ###
+lock naming real recycled-spare pid 18846 -> lock: stale (pid 18846 dead or not a harness)
+lock naming real active-session pid 17199 -> lock: held by live harness pid 17199
+
+### 3. bin/fm-lock.sh acquire reclaims a stale lock naming a recycled spare shape ###
+    (needs a controllable alive pid to also kill it cleanly afterward, so a real sleep
+     process stands in for the spare pid; ps is stubbed ONLY for that one pid, real ps
+     otherwise) ###
+lock acquired: harness pid 53452
+
+### 4. Deterministic suite: tests/fm-session-lock-ancestry.test.sh ###
+ok - session-lock: a version-named Claude Code session is identified from its install path and argv[0]
+ok - session-lock: a harness that is pid 1 of its own namespace is examined, not skipped
+ok - session-lock: ordinary script paths under a harness directory are not harness processes
+ok - session-lock: ownership stops at the first non-harness gap above the contiguous run
+ok - session-lock: a live version-named session holding the lock is not mistaken for a stale owner
+ok - session-lock: a recycled unclaimed bg-spare host is not live while an active bg-pty-host still is
+ok - session-lock e2e: a version-named session claims the home and arms supervision
+ok - session-lock e2e: a session parented by a harness-named daemon claims the home and arms supervision
+ok - session-lock e2e: a version-named session under a harness-named daemon keeps its own lock
+
+### 5. Live e2e guard tests/fm-session-lock-spare-live-e2e.test.sh, run as-is on this host ###
+skip: live: tmux absent
+exit=0
+(tmux is not installed here, so this guard legitimately skips per its own fm_live_gate
+ default-on policy; see testing_summary for the additional hybrid check driven around this.)
+
+### 6. find_pid() false-positive discovered while driving the e2e script's pass path
+    (tmux stubbed only for the launch step, since tmux is absent on this host; the pane
+    pid was pointed at a real, already-running Claude Code session pid so that the
+    script's OWN find_pid/fm_harness_process_matches/fm_harness_pid_alive logic ran
+    unmodified against real host state) ###
+
+Command: PATH="$FAKEBIN:$PATH" FAKE_PANE_PID=<a real active-session pid> bash tests/fm-session-lock-spare-live-e2e.test.sh
+
+not ok - LIVENESS DRIFT: claude 2.1.270 (Claude Code): a recycled spare (pid 9633) no longer name-matches the harness; the exclusion is now vacuous. Re-check FM_HARNESS_RE and the spare shape.
+exit=1
+
+Root cause: find_pid's host-wide 'spare' scan (tests/fm-session-lock-spare-live-e2e.test.sh
+~lines 88-112) has no comm= anchor and returns the FIRST pid anywhere on the host whose
+args contain the '--bg-spare ...claim.sock' substring and do not contain the exact
+space-delimited '--session-id ' substring. It matched pid 9633 -- this very no-mistakes
+gate's own orchestrator process -- because its argv (the --intent text describing this
+bug) contains '--bg-spare <dir>/<id>.claim.sock' verbatim, and its every '--session-id'
+occurrence is followed by a comma or ')' rather than a space, so the exclusion pattern
+does not match it:
+m.sock flag with no --session-id, and its cwd moved 
+ a session (carries --session-id, and a .../pty/<id>
+>.claim.sock and no --session-id). A recycled spare 
+
+Four genuine recycled-spare pids (18846, 22685, and others) were present on the host at
+the same time -- ps -axo pid= returns 9633 before all of them since it is lower-numbered
+-- but find_pid returns on the first match with no continuation past a candidate that
+later fails the non-vacuity check, so the script never reaches them and hard-fails
+instead with a misleading 'LIVENESS DRIFT ... no longer name-matches the harness' message.
