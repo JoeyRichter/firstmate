@@ -85,8 +85,16 @@ EOF
 # genuine recycled-spare argv shape found anywhere on the host is equally valid
 # evidence for this vendor-argv drift canary, with no discrimination of which
 # session originally produced it.
+#
+# Every candidate must first pass fm_harness_process_matches (the same identity
+# check fm_harness_pid_alive uses) before its argv is pattern-matched, and a
+# candidate that fails it is skipped rather than returned: a host-wide argv
+# scan can otherwise collide with an unrelated process whose command line
+# merely contains the flag text (e.g. this gate's own orchestrator, whose
+# --intent argument can quote these very flags), producing a false match
+# instead of continuing on to the real spare or session process.
 find_pid() {  # <kind>
-  local kind=$1 pid args source
+  local kind=$1 pid args comm source
   case "$kind" in
     session) source=$(pid_subtree "$PANE_PID") ;;
     spare) source=$(ps -axo pid= 2>/dev/null) ;;
@@ -94,6 +102,8 @@ find_pid() {  # <kind>
   while read -r pid; do
     [ -n "$pid" ] || continue
     args=$(ps -o args= -p "$pid" 2>/dev/null) || continue
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null) || continue
+    fm_harness_process_matches "$comm" "$args" || continue
     case "$kind" in
       session)
         case " $args " in
