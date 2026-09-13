@@ -303,7 +303,7 @@ test_build_refuses_malformed_payloads_before_touching_the_board() {
 
   # detail_url must be an https:// URL or a safe absolute local path; anything
   # else refuses like every other malformed field.
-  for bad_detail in "javascript:alert(1)" "report.md" "/tmp/../etc/passwd" "//evil.com/x" "ftp://host/x"; do
+  for bad_detail in "javascript:alert(1)" "report.md" "/tmp/../etc/passwd" "//evil.com/x" "ftp://host/x" $'/tmp/foo\n'; do
     write_valid_payload "$data"
     jq --arg d "$bad_detail" '.captains_call[0].detail_url = $d' "$data" > "$data.tmp" \
       && mv "$data.tmp" "$data"

@@ -250,7 +250,9 @@ test_a_fleet_row_renders_a_real_detail_link() {
      "doing":"implementing","detail_url":"https://github.com/example/firstmate/pull/9"}
   ]' '[
     {"id":"ch","repo":"firstmate","title":"Queued work","reason":"queued","dispatchable":true,
-     "detail_url":"/Users/captain/data/reports/plan.md"}
+     "detail_url":"/Users/captain/data/reports/plan.md"},
+    {"id":"ch2","repo":"firstmate","title":"Queued work with a reserved character","reason":"queued",
+     "dispatchable":true,"detail_url":"/Users/captain/data/report#section.md"}
   ]')
   printf '%s' "$out" | jq -e '.error == ""' >/dev/null \
     || fail "the board rendered its fail-closed error instead of the fleet: $out"
@@ -266,7 +268,36 @@ test_a_fleet_row_renders_a_real_detail_link() {
         | .href == "file:///Users/captain/data/reports/plan.md"
           and .label == "plan.md")
   ' >/dev/null || fail "a charted local-path detail_url did not render as a file:// link: $out"
+  printf '%s' "$out" | jq -e '
+    (.charted[1].links | length) == 1
+      and (.charted[1].links[0]
+        | .href == "file:///Users/captain/data/report%23section.md"
+          and .label == "report#section.md")
+  ' >/dev/null || fail "a local-path detail_url with a reserved character was not percent-encoded in its href: $out"
   pass "a fleet row detail_url renders as a real link, https direct and local path as file://"
+}
+
+test_a_landed_row_renders_a_real_detail_link() {
+  local home out
+  home=$(make_home detail-landed-link)
+  out=$(render_payload "$home" '{
+    "schema":"fm-bearings-board.v1","home":"h","generated":"2026-09-12T00:00Z","prs_live":false,
+    "captains_call":[],"underway":[],
+    "landed":[
+      {"id":"ld","repo":"firstmate","what":"Landed work","owner":"firstmate",
+       "detail_url":"/Users/captain/data/reports/postmortem.md"}
+    ],
+    "charted":[],"charted_more":0
+  }')
+  printf '%s' "$out" | jq -e '.error == ""' >/dev/null \
+    || fail "the board rendered its fail-closed error instead of the fleet: $out"
+  printf '%s' "$out" | jq -e '
+    (.landed[0].links | length) == 1
+      and (.landed[0].links[0]
+        | .href == "file:///Users/captain/data/reports/postmortem.md"
+          and .label == "postmortem.md")
+  ' >/dev/null || fail "a Recently Landed detail_url did not render as a file:// link: $out"
+  pass "a Recently Landed row detail_url renders as a real clickable link"
 }
 
 test_a_captains_call_card_renders_a_detail_link() {
@@ -310,6 +341,7 @@ test_rows_without_a_detail_url_render_no_link() {
 }
 
 test_a_fleet_row_renders_a_real_detail_link
+test_a_landed_row_renders_a_real_detail_link
 test_a_captains_call_card_renders_a_detail_link
 test_rows_without_a_detail_url_render_no_link
 test_an_underway_row_leads_with_the_task_name_and_keeps_its_run_status
