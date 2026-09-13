@@ -444,11 +444,11 @@ __FM_BEARINGS_BOARD_DATA__
     if (typeof value !== "string" || !value) return null;
     var href, label;
     if (value.charAt(0) === "/") {
-      href = "file://" + value;
+      href = "file://" + value.split("/").map(encodeURIComponent).join("/");
       label = value.split("/").filter(Boolean).pop() || value;
-    } else if (/^https:\/\//i.test(value)) {
+    } else if (/^https:\/\//.test(value)) {
       href = value;
-      label = value.replace(/^https:\/\//i, "").replace(/\/+$/, "");
+      label = value.replace(/^https:\/\//, "").replace(/\/+$/, "");
     } else {
       return null;
     }
