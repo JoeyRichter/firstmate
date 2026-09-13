@@ -326,6 +326,12 @@ The current Stop-owned main/secondmate inclusion and child-worktree exclusion ar
 Session-lock ownership in `bin/fm-session-lock-lib.sh` is decided against a session's whole contiguous harness ancestry rather than one chosen pid, so the Stop auto-arm reaches its lock owner wherever that owner sits: the outermost pid of Claude Code's multi-level `bg-spare` hook worker chain, or an inner pid when a harness-named daemon parents the session.
 The liveness check that gates lock re-acquisition also excludes a Claude bg-pty-host the daemon has recycled into its idle spare pool: measured against Claude Code 2.1.269 and 2.1.270 on 2026-09-13, a recycled spare stays alive and still name-matches the harness but carries `--bg-spare .../spare/<id>.claim.sock` with no `--session-id` (a claimed host always carries `--session-id` and a `.../pty/<id>.sock` control socket), so `fm_harness_pid_alive` treats it as dead and a stale lock naming it is reclaimed instead of blocking every later session.
 That recycled spare is parented by the daemon or init and hosts no session, so it never appears in the ancestry walk and the walk's Claude widening is untouched.
+Run the live guard after any Claude Code upgrade and before trusting refreshed evidence:
+
+```sh
+FM_SESSION_LOCK_SPARE_LIVE=1 bin/fm-test-run.sh tests/fm-session-lock-spare-live-e2e.test.sh
+```
+
 Harness identity is read from the executable path and `argv[0]` as well as the command basename, because Claude Code's native installer names the per-session executable by its version (`.../share/claude/versions/2.1.220`): `ps -o comm=` reports that path on macOS and the bare version string on Linux, and neither basename names a harness.
 `tests/fm-session-lock-ancestry.test.sh` pins both platforms' reporting semantics behind a deterministic process table and runs the real Stop auto-arm in version-named, daemon-parented, and combined real process trees.
 `tests/fm-watch-arm.test.sh` runs real watcher and arm cycles against durable on-disk state to verify that a delivered reason survives until post-handling acknowledgement and stops replaying after acknowledgement, while an unrelated queue append cannot make a watcher cycle that delivered nothing look successful.
