@@ -301,6 +301,21 @@ test_build_refuses_malformed_payloads_before_touching_the_board() {
   set +e; out=$(run_board "$home" build "$data" 2>&1); rc=$?; set -e
   [ "$rc" -ne 0 ] || fail "a non-HTTPS Landed PR URL was accepted"
 
+  # detail_url must be an https:// URL or a safe absolute local path; anything
+  # else refuses like every other malformed field.
+  for bad_detail in "javascript:alert(1)" "report.md" "/tmp/../etc/passwd" "//evil.com/x" "ftp://host/x"; do
+    write_valid_payload "$data"
+    jq --arg d "$bad_detail" '.captains_call[0].detail_url = $d' "$data" > "$data.tmp" \
+      && mv "$data.tmp" "$data"
+    set +e; out=$(run_board "$home" build "$data" 2>&1); rc=$?; set -e
+    [ "$rc" -ne 0 ] || fail "an invalid card detail_url was accepted: $bad_detail"
+  done
+
+  write_valid_payload "$data"
+  jq '.charted[0].detail_url = "../relative"' "$data" > "$data.tmp" && mv "$data.tmp" "$data"
+  set +e; out=$(run_board "$home" build "$data" 2>&1); rc=$?; set -e
+  [ "$rc" -ne 0 ] || fail "an invalid charted-row detail_url was accepted"
+
   assert_absent "$board" "a refused payload still produced a board"
   pass "build refuses malformed payloads before touching the board"
 }
@@ -498,6 +513,28 @@ test_build_refuses_a_template_without_exactly_one_slot() {
   assert_contains "$out" "data slot" "the slot refusal did not say why: $out"
   assert_absent "$home/.lavish/bearings-board.html" "a refused template still produced a board"
   pass "build refuses a template without exactly one data slot"
+}
+
+test_detail_url_is_optional_and_round_trips_https_and_local_paths() {
+  local home data board
+  home=$(make_home detail-url)
+  data="$home/payload.json"
+  board="$home/.lavish/bearings-board.html"
+  write_valid_payload "$data"
+  jq '.captains_call[0].detail_url = "/Users/captain/data/scout/report.md"
+      | .underway = [{"id":"uw","repo":"sample","name":"Underway work","state":"working",
+          "kind":"ship","doing":"implementing","detail_url":"https://example.com/plan"}]
+      | .landed = [{"id":"ld","repo":"sample","what":"Landed","owner":"crew","detail_url":null}]
+      | .charted[0].detail_url = "/Users/captain/data/diagram.svg"' \
+    "$data" > "$data.tmp" && mv "$data.tmp" "$data"
+  run_board "$home" build "$data" >/dev/null \
+    || fail "a valid detail_url payload was refused"
+  extract_payload "$board" | jq -e '
+    (.captains_call[0].detail_url == "/Users/captain/data/scout/report.md")
+      and (.underway[0].detail_url == "https://example.com/plan")
+      and (.charted[0].detail_url == "/Users/captain/data/diagram.svg")
+  ' >/dev/null || fail "detail_url values did not round-trip through the built board"
+  pass "detail_url is optional and round-trips https URLs and local paths"
 }
 
 test_charted_kind_is_optional_and_accepts_both_values() {
@@ -779,6 +816,7 @@ test_build_refuses_a_nondecision_reconcile_value() {
 
 test_path_is_stable_and_home_scoped
 test_build_refuses_malformed_payloads_before_touching_the_board
+test_detail_url_is_optional_and_round_trips_https_and_local_paths
 test_charted_kind_is_optional_and_accepts_both_values
 test_build_injects_binds_then_arms
 test_registration_cannot_consume_before_any_origin_binding

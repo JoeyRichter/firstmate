@@ -26,7 +26,14 @@ class Node {
     this.checked = false;
     this.classList = {
       add: (c) => { this.className = (this.className + " " + c).trim(); },
+      remove: (c) => { this.className = this.className.split(/\s+/).filter((x) => x !== c).join(" ").trim(); },
       contains: (c) => this.className.split(/\s+/).includes(c),
+      toggle: (c, on) => {
+        var has = this.className.split(/\s+/).includes(c);
+        var want = on === undefined ? !has : !!on;
+        if (want && !has) this.className = (this.className + " " + c).trim();
+        else if (!want && has) this.className = this.className.split(/\s+/).filter((x) => x !== c).join(" ").trim();
+      },
     };
   }
   get textContent() {
@@ -89,6 +96,22 @@ const badgesOf = (row) =>
     .filter((c) => c.className.includes("fm-badge"))
     .map((c) => ({ tone: c.className.replace(/.*fm-badge--/, "").trim(), text: c.textContent }));
 
+// Every anchor a node renders, with its resolved href, visible label, tooltip,
+// and class, so link affordances are asserted on what the template produced.
+const linksOf = (node) => {
+  const out = [];
+  const walk = (n) => {
+    for (const c of n.children) {
+      if (c.tagName === "a") {
+        out.push({ href: c.href || "", label: c.textContent, title: c.title || "", cls: c.className });
+      }
+      walk(c);
+    }
+  };
+  walk(node);
+  return out;
+};
+
 const strip = byId.get("bb-stats") || new Node("div");
 const stats = strip.children.map((t) => ({
   n: Number(t.children.find((c) => c.className.includes("bb-stat__num"))?.textContent),
@@ -104,12 +127,23 @@ const rowsOf = (container) =>
         title: main?.children.find((c) => c.className.includes("bb-row__title"))?.textContent ?? "",
         sub: main?.children.find((c) => c.className.includes("bb-row__sub"))?.textContent ?? "",
         badges: badgesOf(row),
+        links: linksOf(row),
         pickable: row.children.some((c) => c.className.includes("bb-pick") && !c.className.includes("spacer")),
       };
     });
 
 const uw = byId.get("bb-underway") || new Node("div");
 const underway = rowsOf(uw);
+
+const ld = byId.get("bb-landed") || new Node("div");
+const landed = rowsOf(ld);
+
+// Captain's Call cards render into the deck; capture each card's links so the
+// generic detail affordance is asserted on the dealt card, not just fleet rows.
+const deck = byId.get("bb-call") || new Node("div");
+const call = deck.children
+  .filter((c) => c.className.includes("bb-decision"))
+  .map((card) => ({ links: linksOf(card) }));
 
 const ch = byId.get("bb-charted") || new Node("div");
 const charted = rowsOf(ch);
@@ -123,4 +157,4 @@ const empty = ch.children.filter((c) => c.className.includes("bb-empty")).map((c
 const more = ch.children.filter((c) => c.className.includes("bb-morechip")).map((c) => c.textContent);
 
 process.stdout.write(
-  JSON.stringify({ stats, underway, charted, empty, more, error: errorText }) + "\n");
+  JSON.stringify({ stats, underway, landed, call, charted, empty, more, error: errorText }) + "\n");

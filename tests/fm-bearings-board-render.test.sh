@@ -78,6 +78,20 @@ render() {  # <home> <charted-json> [charted_more] [charted_warning_more]
   render_board "$1" '[]' "$2" "${3:-0}" "${4:-0}"
 }
 
+# Build the board from a complete payload object and return what the renderer
+# produced. Used when a test needs Captain's Call or Recently Landed content the
+# section-scoped helpers above do not compose.
+render_payload() {  # <home> <payload-json-object>
+  local home=$1 payload=$2 data="$1/payload.json"
+  printf '%s\n' "$payload" | jq . > "$data" || fail "the test payload is not valid JSON"
+  PATH="$home/fakebin:$PATH" FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROCEVENT_CLAIM_ROOT="$home/procevent-claims" \
+    "$BOARD" build "$data" >/dev/null || fail "the board did not build"
+  node "$HARNESS" "$home/.lavish/bearings-board.html" \
+    || fail "the built board could not be rendered"
+}
+
 charted_next_count() {  # <render-json>
   printf '%s' "$1" | jq -r '.stats[] | select(.label == "charted next") | .n'
 }
@@ -228,6 +242,76 @@ test_charted_rows_without_a_filed_date_follow_the_dated_rows_in_payload_order() 
   pass "charted rows with no filed date follow the dated rows in payload order"
 }
 
+test_a_fleet_row_renders_a_real_detail_link() {
+  local home out
+  home=$(make_home detail-row-link)
+  out=$(render_board "$home" '[
+    {"id":"uw","repo":"firstmate","name":"Board work","state":"working","kind":"ship",
+     "doing":"implementing","detail_url":"https://github.com/example/firstmate/pull/9"}
+  ]' '[
+    {"id":"ch","repo":"firstmate","title":"Queued work","reason":"queued","dispatchable":true,
+     "detail_url":"/Users/captain/data/reports/plan.md"}
+  ]')
+  printf '%s' "$out" | jq -e '.error == ""' >/dev/null \
+    || fail "the board rendered its fail-closed error instead of the fleet: $out"
+  printf '%s' "$out" | jq -e '
+    (.underway[0].links | length) == 1
+      and (.underway[0].links[0]
+        | .href == "https://github.com/example/firstmate/pull/9"
+          and (.label | test("^https://") | not) and (.label | length > 0))
+  ' >/dev/null || fail "an underway detail_url did not render as a real link: $out"
+  printf '%s' "$out" | jq -e '
+    (.charted[0].links | length) == 1
+      and (.charted[0].links[0]
+        | .href == "file:///Users/captain/data/reports/plan.md"
+          and .label == "plan.md")
+  ' >/dev/null || fail "a charted local-path detail_url did not render as a file:// link: $out"
+  pass "a fleet row detail_url renders as a real link, https direct and local path as file://"
+}
+
+test_a_captains_call_card_renders_a_detail_link() {
+  local home out
+  home=$(make_home detail-call-link)
+  out=$(render_payload "$home" '{
+    "schema":"fm-bearings-board.v1","home":"h","generated":"2026-09-12T00:00Z","prs_live":false,
+    "captains_call":[
+      {"key":"choose","type":"decision","repo":"firstmate","title":"Pick an approach",
+       "about":"context","options":[{"value":"a","label":"A"},{"value":"b","label":"B"}],
+       "detail_url":"/Users/captain/data/scout/report.md"}
+    ],
+    "underway":[],"landed":[],"charted":[],"charted_more":0
+  }')
+  printf '%s' "$out" | jq -e '.error == ""' >/dev/null \
+    || fail "the board rendered its fail-closed error instead of the fleet: $out"
+  printf '%s' "$out" | jq -e '
+    (.call | length) == 1
+      and ([.call[0].links[] | select(.cls | test("bb-decision__link"))]
+        | length == 1
+          and (.[0].href == "file:///Users/captain/data/scout/report.md")
+          and (.[0].label == "report.md"))
+  ' >/dev/null || fail "a Captain's Call card detail_url did not render as a real link: $out"
+  pass "a Captain's Call card detail_url renders as a real clickable link"
+}
+
+test_rows_without_a_detail_url_render_no_link() {
+  local home out
+  home=$(make_home detail-absent)
+  out=$(render_board "$home" '[
+    {"id":"uw","repo":"firstmate","name":"No link here","state":"working","kind":"ship","doing":"implementing"}
+  ]' '[
+    {"id":"ch","repo":"firstmate","title":"Also none","reason":"queued","dispatchable":true}
+  ]')
+  printf '%s' "$out" | jq -e '.error == ""' >/dev/null \
+    || fail "the board rendered its fail-closed error instead of the fleet: $out"
+  printf '%s' "$out" | jq -e '
+    (.underway[0].links | length) == 0 and (.charted[0].links | length) == 0
+  ' >/dev/null || fail "a row with no detail_url still rendered a link: $out"
+  pass "rows without a detail_url render no link and no broken markup"
+}
+
+test_a_fleet_row_renders_a_real_detail_link
+test_a_captains_call_card_renders_a_detail_link
+test_rows_without_a_detail_url_render_no_link
 test_an_underway_row_leads_with_the_task_name_and_keeps_its_run_status
 test_an_underway_identifier_label_is_not_replaced_by_run_status
 test_charted_next_reads_newest_filed_first

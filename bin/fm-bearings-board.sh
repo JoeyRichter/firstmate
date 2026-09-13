@@ -79,6 +79,15 @@
 # first; a row with no comparable date keeps its payload order after every dated
 # row. Anything else in that field refuses rather than sorting on garbage.
 #
+# Any Captain's Call card and any Underway, Recently Landed, or Charted Next row
+# MAY carry `detail_url`, an optional pointer to more detail that the template
+# renders as a real clickable link rather than prose: either an `https://` URL
+# (same bound as `pr_url`), or an absolute local filesystem path, which the
+# template renders as a `file://` link so it opens directly. A local path must
+# be absolute, carry no control characters, not begin with `//`, and contain no
+# `..` traversal segment; anything else refuses rather than linking an unsafe or
+# ambiguous target. null or an omitted field means the item shows no link.
+#
 # The board path is stable - $FM_HOME/.lavish/bearings-board.html - so a
 # re-invocation rebuilds the same file in place, which keeps the same Lavish
 # session URL and the same canonical process-event source id. Injection escapes
@@ -128,11 +137,22 @@ validate_payload() {  # <data.json>
     def optional_filed:
       (has("filed") | not) or (.filed == null) or (.filed | valid_filed);
     def optional_string($name): (has($name) | not) or (.[$name] | type == "string");
+    def https_url_string:
+      type == "string"
+      and test("^https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?(?:[/?#][^[:space:]]*)?$");
     def optional_https_url($name):
+      (has($name) | not) or (.[$name] | https_url_string);
+    # An absolute local path the template renders as a file:// link: no control
+    # characters, no protocol-relative `//` prefix, and no `..` traversal segment.
+    def local_path_string:
+      type == "string"
+      and test("^/[^[:cntrl:]]*$")
+      and (test("^//") | not)
+      and (test("(^|/)\\.\\.(/|$)") | not);
+    def optional_detail_link($name):
       (has($name) | not)
-      or (.[$name]
-        | type == "string"
-          and test("^https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?(?:[/?#][^[:space:]]*)?$"));
+      or (.[$name] == null)
+      or (.[$name] | https_url_string or local_path_string);
     def version: type == "string" and test("^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})$");
     def optional_subject:
       (has("subject") | not)
@@ -158,6 +178,7 @@ validate_payload() {  # <data.json>
       and (optional_string("decide"))
       and (optional_string("detail"))
       and (optional_https_url("pr_url"))
+      and (optional_detail_link("detail_url"))
       and optional_subject
       and (if has("subject") then .type == "decision" else true end)
       and (optional_string("freeform_hint"))
@@ -171,11 +192,13 @@ validate_payload() {  # <data.json>
       and (if .type == "merge" then (.risk | nonempty_string) else true end);
     def underway_item:
       type == "object" and repo_marker and name_marker and (.id | nonempty_string)
-      and (.state | nonempty_string) and (.doing | nonempty_string) and (.kind | nonempty_string);
+      and (.state | nonempty_string) and (.doing | nonempty_string) and (.kind | nonempty_string)
+      and (optional_detail_link("detail_url"));
     def landed_item:
       type == "object" and repo_marker and (.id | nonempty_string)
       and (.what | nonempty_string) and (.owner | nonempty_string)
       and optional_https_url("pr_url")
+      and (optional_detail_link("detail_url"))
       and optional_subject;
     def charted_item:
       type == "object" and repo_marker and (.id | slug(128))
@@ -183,6 +206,7 @@ validate_payload() {  # <data.json>
       and (.dispatchable | type == "boolean")
       and ((has("kind") | not) or (.kind == "queued" or .kind == "warning"))
       and optional_filed
+      and (optional_detail_link("detail_url"))
       and (if .kind == "warning" then .dispatchable == false else true end);
     type == "object"
     and (.schema == $schema)

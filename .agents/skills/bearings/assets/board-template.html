@@ -435,6 +435,27 @@ __FM_BEARINGS_BOARD_DATA__
     return n;
   }
   function badge(tone, text) { return el("span", "fm-badge fm-badge--" + tone, text); }
+  /* Optional "more detail" link: an https:// URL opens as-is, an absolute local
+     path opens as a file:// link. The visible label is a short honest derivation
+     (the file basename, or the URL with its scheme trimmed) with the full target
+     on hover; the payload validator has already rejected anything else. Returns
+     null when the item carries no usable detail_url so no empty link renders. */
+  function detailAnchor(value, cls) {
+    if (typeof value !== "string" || !value) return null;
+    var href, label;
+    if (value.charAt(0) === "/") {
+      href = "file://" + value;
+      label = value.split("/").filter(Boolean).pop() || value;
+    } else if (/^https:\/\//i.test(value)) {
+      href = value;
+      label = value.replace(/^https:\/\//i, "").replace(/\/+$/, "");
+    } else {
+      return null;
+    }
+    var a = el("a", cls, label);
+    a.href = href; a.title = value; a.target = "_blank"; a.rel = "noopener";
+    return a;
+  }
   /* Warnings ride the charted feed for layout only; they are alarms, not work,
      so every count of queued work excludes them. */
   function isWarning(t) { return t && t.kind === "warning"; }
@@ -514,6 +535,9 @@ __FM_BEARINGS_BOARD_DATA__
       if (item.decide) ctx.appendChild(ctxRow("decide", item.decide));
       pad.appendChild(ctx);
     }
+
+    var cardLink = detailAnchor(item.detail_url, "bb-decision__link");
+    if (cardLink) pad.appendChild(cardLink);
 
     var form = document.createElement("form");
     form.setAttribute("data-lavish-question", item.key);
@@ -636,6 +660,8 @@ __FM_BEARINGS_BOARD_DATA__
     main.appendChild(el("div", "bb-row__sub",
       t.doing + " · " + t.kind + " · " + (t.repo || t.id)));
     row.appendChild(main);
+    var uwLink = detailAnchor(t.detail_url, "bb-row__pr");
+    if (uwLink) row.appendChild(uwLink);
     uw.appendChild(row);
   });
 
@@ -656,6 +682,8 @@ __FM_BEARINGS_BOARD_DATA__
       a.href = t.pr_url; a.title = t.pr_url; a.target = "_blank"; a.rel = "noopener";
       row.appendChild(a);
     }
+    var ldLink = detailAnchor(t.detail_url, "bb-row__pr");
+    if (ldLink) row.appendChild(ldLink);
     ld.appendChild(row);
   });
 
@@ -703,6 +731,8 @@ __FM_BEARINGS_BOARD_DATA__
     var chSub = t.repo || t.id;
     main.appendChild(el("div", "bb-row__sub", t.reason ? t.reason + " · " + chSub : chSub));
     row.appendChild(main);
+    var chLink = detailAnchor(t.detail_url, "bb-row__pr");
+    if (chLink) row.appendChild(chLink);
     if (isWarning(t)) row.appendChild(badge("danger", "needs repair"));
     else if (t.reason) row.appendChild(badge("warn", "waiting"));
     ch.appendChild(row);
