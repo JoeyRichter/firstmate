@@ -146,7 +146,7 @@ validate_payload() {  # <data.json>
     # characters, no protocol-relative `//` prefix, and no `..` traversal segment.
     def local_path_string:
       type == "string"
-      and test("^/[^[:cntrl:]]*$")
+      and test("^/[^[:cntrl:]]*\\z")
       and (test("^//") | not)
       and (test("(^|/)\\.\\.(/|$)") | not);
     def optional_detail_link($name):
