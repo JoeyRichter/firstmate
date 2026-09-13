@@ -163,14 +163,16 @@ EOF
 # --session-id (and its control socket is .../pty/<id>.sock) and never carries
 # --bg-spare. Excluding requires --bg-spare to be PRESENT, and only a spare
 # carries it, so an active host can never be excluded; requiring --session-id to
-# be ABSENT is the extra safety conjunct against a future build that emits both.
+# be ABSENT is the extra safety conjunct against a future build that emits both,
+# matched in both the space (`--session-id <uuid>`) and equals (`--session-id=
+# <uuid>`) spellings so a future build using either form is still caught.
 # A truncated argv that loses --bg-spare fails open to the prior behavior rather
 # than into wrongly excluding a live host. Verified against Claude Code 2.1.269
 # and 2.1.270, 2026-09-13. Callers gate this behind FM_HARNESS_IS_CLAUDE because
 # this pooling is specific to Claude Code's bg-pty-host process model.
 fm_harness_claude_args_are_idle_spare() {  # <args>
   local args=" $1 "
-  case "$args" in *' --session-id '*) return 1 ;; esac
+  case "$args" in *' --session-id '*|*' --session-id='*) return 1 ;; esac
   case "$args" in *' --bg-spare '*) return 0 ;; esac
   return 1
 }

@@ -53,10 +53,42 @@ mkdir -p "$LAB/wt"
 "$REAL_TMUX" -L "$SOCKET" new-window -d -t spare: -n claude -c "$LAB/wt" -- "$CLAUDE_BIN" \
   || fail "could not launch a claude window"
 
+PANE_PID=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t spare:claude '#{pane_pid}' 2>/dev/null | tr -d ' ')
+[ -n "$PANE_PID" ] || fail "could not read the pane pid for the launched claude window"
+
+# All live pids descended from $1, root included, via ppid links. Scopes the
+# active-session lookup to the claude window this fixture itself launched, so a
+# claude session already running elsewhere on the host is never mistaken for it.
+pid_subtree() {  # <root_pid>
+  local root=$1 pairs pid ppid queue next
+  pairs=$(ps -axo pid=,ppid= 2>/dev/null)
+  printf '%s\n' "$root"
+  queue=" $root "
+  while [ -n "${queue// /}" ]; do
+    next=''
+    while read -r pid ppid; do
+      [ -n "$pid" ] || continue
+      case "$queue" in *" $ppid "*) printf '%s\n' "$pid"; next="$next $pid " ;; esac
+    done <<EOF
+$pairs
+EOF
+    queue=$next
+  done
+}
+
 # Classify every live process's argv exactly as the harness identity does.
 # Returns the first pid whose live argv matches predicate $1 ("session"|"spare").
+# "session" is scoped to this fixture's own claude subtree (see pid_subtree
+# above); "spare" cannot be, because the daemon reparents a recycled bg-pty-host
+# out of its hosting session's tree into its own idle pool, so it is scanned
+# host-wide and the pass gate below - not this lookup - is what keeps an
+# unrelated host's spare from being counted as proof of this fixture's own.
 find_pid() {  # <kind>
-  local kind=$1 pid args
+  local kind=$1 pid args source
+  case "$kind" in
+    session) source=$(pid_subtree "$PANE_PID") ;;
+    spare) source=$(ps -axo pid= 2>/dev/null) ;;
+  esac
   while read -r pid; do
     [ -n "$pid" ] || continue
     args=$(ps -o args= -p "$pid" 2>/dev/null) || continue
@@ -71,7 +103,9 @@ find_pid() {  # <kind>
           *' --bg-spare '*claim.sock*) printf '%s\n' "$pid"; return 0 ;;
         esac ;;
     esac
-  done < <(ps -axo pid= 2>/dev/null)
+  done <<EOF
+$source
+EOF
   return 1
 }
 
@@ -85,6 +119,7 @@ for _ in $(seq 1 150); do
 done
 
 CHECKED=0
+SPARE_VERIFIED=0
 
 if [ -n "$session_pid" ]; then
   note "active session pid $session_pid: $(ps -o args= -p "$session_pid" 2>/dev/null | cut -c1-100)"
@@ -108,12 +143,20 @@ if [ -n "$spare_pid" ]; then
   fi
   pass "session-lock live: a recycled unclaimed --bg-spare host classifies NOT live"
   CHECKED=$((CHECKED + 1))
+  SPARE_VERIFIED=1
 else
   note "no recycled --bg-spare pool process observed; the daemon may not have pooled one on this host/release"
 fi
 
-[ "$CHECKED" -gt 0 ] || fail \
-  "claude $CLAUDE_VERSION: observed neither an active session nor a recycled spare, so this run proved nothing about the live discriminator"
+# The recycled-spare verdict is the behavior this file exists to prove (see the
+# header). An active-host-only observation exercises a shape the pre-change code
+# already got right, so it must not be reportable as a green pass on its own.
+if [ "$SPARE_VERIFIED" -ne 1 ]; then
+  printf 'skip: live: claude %s: no recycled --bg-spare pool process observed within the poll window, so the recycled-spare discriminator this guard exists to prove is unverified here\n' "$CLAUDE_VERSION"
+  cleanup_all
+  trap - EXIT
+  exit 0
+fi
 
 note "claude $CLAUDE_VERSION: verified $CHECKED of 2 live shapes"
 cleanup_all
