@@ -79,10 +79,12 @@ EOF
 # Classify every live process's argv exactly as the harness identity does.
 # Returns the first pid whose live argv matches predicate $1 ("session"|"spare").
 # "session" is scoped to this fixture's own claude subtree (see pid_subtree
-# above); "spare" cannot be, because the daemon reparents a recycled bg-pty-host
-# out of its hosting session's tree into its own idle pool, so it is scanned
-# host-wide and the pass gate below - not this lookup - is what keeps an
-# unrelated host's spare from being counted as proof of this fixture's own.
+# above) so a session running elsewhere on the host is never mistaken for it.
+# "spare" is scanned host-wide instead, because the daemon reparents a recycled
+# bg-pty-host out of its hosting session's tree into its own idle pool: any
+# genuine recycled-spare argv shape found anywhere on the host is equally valid
+# evidence for this vendor-argv drift canary, with no discrimination of which
+# session originally produced it.
 find_pid() {  # <kind>
   local kind=$1 pid args source
   case "$kind" in
@@ -109,6 +111,10 @@ EOF
   return 1
 }
 
+# Observation prints nothing: whether this run counts as a skip is decided only
+# after both pids are known, and a capability skip must be the run's first
+# output line for bin/fm-test-run.sh's gate-skip detector to recognize it
+# instead of an ordinary pass.
 session_pid=''
 spare_pid=''
 for _ in $(seq 1 150); do
@@ -118,44 +124,44 @@ for _ in $(seq 1 150); do
   sleep 0.2
 done
 
+if [ -z "$session_pid" ] && [ -z "$spare_pid" ]; then
+  fail "claude $CLAUDE_VERSION: observed neither an active session nor a recycled spare, so this run proved nothing about the live discriminator"
+fi
+
+# The recycled-spare verdict is the behavior this file exists to prove (see the
+# header): an active-host-only observation exercises a shape the pre-change
+# code already got right, so it is a capability skip, not a pass, when the
+# daemon never pooled a spare within the poll window.
+if [ -z "$spare_pid" ]; then
+  printf 'skip: live: claude %s: an active --session-id host was observed but no recycled --bg-spare pool process appeared within the poll window; the recycled-spare discriminator this guard exists to prove is unverified here\n' "$CLAUDE_VERSION"
+  note "active session pid $session_pid: $(ps -o args= -p "$session_pid" 2>/dev/null | cut -c1-100)"
+  cleanup_all
+  trap - EXIT
+  exit 0
+fi
+
 CHECKED=0
-SPARE_VERIFIED=0
+
+# It must still name-match the harness (so it is genuinely being EXCLUDED, not
+# merely unrecognized) yet must not read as a live harness.
+comm=$(ps -o comm= -p "$spare_pid" 2>/dev/null); args=$(ps -o args= -p "$spare_pid" 2>/dev/null)
+fm_harness_process_matches "$comm" "$args" \
+  || fail "LIVENESS DRIFT: claude $CLAUDE_VERSION: a recycled spare (pid $spare_pid) no longer name-matches the harness; the exclusion is now vacuous. Re-check FM_HARNESS_RE and the spare shape."
+if fm_harness_pid_alive "$spare_pid"; then
+  fail "LIVENESS DRIFT: claude $CLAUDE_VERSION: a recycled unclaimed --bg-spare host (pid $spare_pid) classified LIVE. A stale lock naming it will never be reclaimed; re-check fm_harness_claude_args_are_idle_spare against this release's argv."
+fi
+note "recycled spare pid $spare_pid: $(ps -o args= -p "$spare_pid" 2>/dev/null | cut -c1-100)"
+pass "session-lock live: a recycled unclaimed --bg-spare host classifies NOT live"
+CHECKED=$((CHECKED + 1))
 
 if [ -n "$session_pid" ]; then
-  note "active session pid $session_pid: $(ps -o args= -p "$session_pid" 2>/dev/null | cut -c1-100)"
   fm_harness_pid_alive "$session_pid" \
     || fail "LIVENESS DRIFT: claude $CLAUDE_VERSION: an active bg-pty-host carrying --session-id (pid $session_pid) classified NOT live. fm_harness_pid_alive is now rejecting a live session; re-check the --session-id marker in bin/fm-session-lock-lib.sh."
+  note "active session pid $session_pid: $(ps -o args= -p "$session_pid" 2>/dev/null | cut -c1-100)"
   pass "session-lock live: an active claude session (--session-id) classifies alive"
   CHECKED=$((CHECKED + 1))
 else
   note "no live claude --session-id process observed; the active-session verdict is unverified here"
-fi
-
-if [ -n "$spare_pid" ]; then
-  note "recycled spare pid $spare_pid: $(ps -o args= -p "$spare_pid" 2>/dev/null | cut -c1-100)"
-  # It must still name-match the harness (so it is genuinely being EXCLUDED, not
-  # merely unrecognized) yet must not read as a live harness.
-  comm=$(ps -o comm= -p "$spare_pid" 2>/dev/null); args=$(ps -o args= -p "$spare_pid" 2>/dev/null)
-  fm_harness_process_matches "$comm" "$args" \
-    || fail "LIVENESS DRIFT: claude $CLAUDE_VERSION: a recycled spare (pid $spare_pid) no longer name-matches the harness; the exclusion is now vacuous. Re-check FM_HARNESS_RE and the spare shape."
-  if fm_harness_pid_alive "$spare_pid"; then
-    fail "LIVENESS DRIFT: claude $CLAUDE_VERSION: a recycled unclaimed --bg-spare host (pid $spare_pid) classified LIVE. A stale lock naming it will never be reclaimed; re-check fm_harness_claude_args_are_idle_spare against this release's argv."
-  fi
-  pass "session-lock live: a recycled unclaimed --bg-spare host classifies NOT live"
-  CHECKED=$((CHECKED + 1))
-  SPARE_VERIFIED=1
-else
-  note "no recycled --bg-spare pool process observed; the daemon may not have pooled one on this host/release"
-fi
-
-# The recycled-spare verdict is the behavior this file exists to prove (see the
-# header). An active-host-only observation exercises a shape the pre-change code
-# already got right, so it must not be reportable as a green pass on its own.
-if [ "$SPARE_VERIFIED" -ne 1 ]; then
-  printf 'skip: live: claude %s: no recycled --bg-spare pool process observed within the poll window, so the recycled-spare discriminator this guard exists to prove is unverified here\n' "$CLAUDE_VERSION"
-  cleanup_all
-  trap - EXIT
-  exit 0
 fi
 
 note "claude $CLAUDE_VERSION: verified $CHECKED of 2 live shapes"
