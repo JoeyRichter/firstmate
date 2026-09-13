@@ -61,6 +61,14 @@
 # Every scaffold also carries the steering-inbox receive-and-ack section:
 # process state/<id>.inbox/*.msg in order and acknowledge each by moving it to
 # handled/ (record, doorbell, and ladder owned by bin/fm-task-inbox-lib.sh).
+# Every ship and scout brief also splices in a "Standing crew notes" section
+# from data/crew-notes.md when that file has content: captain/firstmate-editable
+# standing crewmate-facing guidance that reaches every brief with no change to
+# this script. It is distinct from the firstmate-only data/captain.md and
+# data/learnings.md, which a spawned crewmate never sees. An absent or
+# blank-only file yields no section, so a home that set no notes still scaffolds
+# cleanly, and its body is spliced verbatim (backticks and $-expressions there
+# never run at scaffold time).
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -355,20 +363,27 @@ IFS= read -r -d '' TASK_SECTION <<'EOF' || true
 EOF
 TASK_SECTION=${TASK_SECTION%$'\n'}
 
-# Single owner of the worker-facing tool-usage rule shared by the scout and ship
-# scaffolds. Kept in one variable so the guidance cannot drift between the two
-# heredocs. The backticks live in this quoted heredoc as literal text, so they
-# stay literal when the value is expanded into the unquoted brief heredocs.
-IFS= read -r -d '' TOOLS_RULE <<'EOF' || true
-3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
-   For symbol-level questions about code - finding every real reference to a symbol, confirming a
-   symbol has zero callers anywhere, or jumping to a definition across namespaces and inheritance -
-   prefer whatever semantic code-intelligence (LSP) tooling is configured for that language over grep,
-   which is not authoritative for these. In Claude Code that tool is deferred, so
-   load it once with ToolSearch `select:LSP` before calling it.
-   Plain text, config, and string searches stay fine with grep.
+# Standing crew notes: captain/firstmate-editable guidance that reaches every
+# generated ship/scout brief without a script change. Firstmate appends short,
+# imperative, crewmate-facing rules to data/crew-notes.md (a private per-home
+# file, distinct from the firstmate-only data/captain.md and data/learnings.md
+# the crewmate never sees); this splices that file's body into a labeled brief
+# section verbatim. An absent or blank-only file produces no section, so a home
+# that has set no notes still scaffolds cleanly. The file body is inserted by
+# parameter expansion into the unquoted brief heredocs, so any backticks or
+# $-expressions a captain writes there stay literal and never run at scaffold time.
+CREW_NOTES_FILE="$DATA/crew-notes.md"
+CREW_NOTES_SECTION=""
+if [ -f "$CREW_NOTES_FILE" ] && grep -q '[^[:space:]]' "$CREW_NOTES_FILE"; then
+  crew_notes_body=$(cat "$CREW_NOTES_FILE")
+  IFS= read -r -d '' CREW_NOTES_SECTION <<EOF || true
+# Standing crew notes
+Standing guidance from firstmate that applies to every task; read it before you start.
+
+$crew_notes_body
 EOF
-TOOLS_RULE=${TOOLS_RULE%$'\n'}
+  CREW_NOTES_SECTION=${CREW_NOTES_SECTION%$'\n'}
+fi
 
 if [ "$KIND" = scout ]; then
 if "$SCRIPT_DIR/fm-bootstrap.sh" lavish-compatible >/dev/null 2>&1; then
@@ -392,7 +407,7 @@ The report is the only thing that survives, so anything worth keeping must be in
 # Rules
 1. Never push to any remote and never open a PR.
 2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
-$TOOLS_RULE
+3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
@@ -425,6 +440,8 @@ $TOOLS_RULE
    going. A drive-call error, timeout, slow read, or generic unreachability is NOT a daemon error:
    the daemon accepts \`respond\` immediately and runs the round in the background, so a killed or
    timed-out call was only waiting for a read while the run kept working.
+
+$CREW_NOTES_SECTION
 
 $INBOX_SECTION
 
@@ -481,7 +498,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 # Rules
 $RULE1
 2. Stay inside this worktree; modify nothing outside it.
-$TOOLS_RULE
+3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
@@ -516,6 +533,8 @@ $ASK_USER_BLOCK
    going. A drive-call error, timeout, slow read, or generic unreachability is NOT a daemon error:
    the daemon accepts \`respond\` immediately and runs the round in the background, so a killed or
    timed-out call was only waiting for a read while the run kept working.
+
+$CREW_NOTES_SECTION
 
 $INBOX_SECTION
 

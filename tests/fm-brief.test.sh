@@ -214,12 +214,8 @@ test_ship_modes_generate_clean_briefs() {
     assert_grep "## Captain's intent" "$brief" "$id: brief missing Captain's intent subsection"
     assert_grep "## Firstmate spec" "$brief" "$id: brief missing Firstmate spec subsection"
     assert_grep 'never a bare number such as "PR 108"' "$brief" "$id: brief missing the full-PR-URL rule"
-    assert_grep "semantic code-intelligence (LSP) tooling is configured for that language over grep" "$brief" \
-      "$id: brief missing the LSP-over-grep guidance for symbol-level questions"
-    assert_grep 'load it once with ToolSearch' "$brief" \
-      "$id: brief missing the deferred-LSP ToolSearch load step"
-    assert_grep "string searches stay fine with grep" "$brief" \
-      "$id: brief overcorrected away from grep for plain-text searches"
+    assert_no_grep "# Standing crew notes" "$brief" \
+      "$id: brief with no data/crew-notes.md must not emit an empty crew-notes section"
     assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
       "$id: brief missing nonterminal working:/setup-complete gate protection"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
@@ -867,10 +863,8 @@ test_scout_and_secondmate_scaffold() {
   assert_present "$brief" "scout brief was not scaffolded"
   assert_grep "SCOUT task" "$brief" "scout brief must declare itself a scout task"
   assert_grep "report.md" "$brief" "scout brief must point at the report deliverable"
-  assert_grep "semantic code-intelligence (LSP) tooling is configured for that language over grep" "$brief" \
-    "scout brief missing the LSP-over-grep guidance for symbol-level questions"
-  assert_grep 'load it once with ToolSearch' "$brief" \
-    "scout brief missing the deferred-LSP ToolSearch load step"
+  assert_no_grep "# Standing crew notes" "$brief" \
+    "scout brief with no data/crew-notes.md must not emit an empty crew-notes section"
   assert_grep "## Captain's intent" "$brief" "scout brief missing Captain's intent subsection"
   assert_grep "## Firstmate spec" "$brief" "scout brief missing Firstmate spec subsection"
   assert_grep "{FIRSTMATE_SPEC}" "$brief" "scout brief missing the spec placeholder"
@@ -911,6 +905,67 @@ test_worker_role_scope() {
   pass "fm-brief: scaffolds leave the worker role scope to the launch boundary and keep the secondmate contract"
 }
 
+# data/crew-notes.md is the general mechanism for captain/firstmate-editable
+# standing crewmate-facing guidance: fm-brief.sh splices its body into every
+# ship and scout brief with no script change. A present file must reach the
+# crewmate verbatim (backticks and $-expressions stay literal), and an absent
+# or blank-only file must leave no empty section so a home that set no notes
+# still scaffolds cleanly.
+test_crew_notes_splice_from_data_file() {
+  local home brief marker dollar
+  # The backticks and $-expression here must stay literal: the test proves the
+  # scaffold splices crew-notes content verbatim without shell expansion.
+  # shellcheck disable=SC2016
+  marker='prefer the `select:LSP` code-intelligence tool over grep for symbol references'
+  # shellcheck disable=SC2016
+  dollar='never write secrets into $SECRET_LOG'
+
+  # Present: content reaches both scout and ship briefs verbatim.
+  home="$TMP_ROOT/crew-notes-present"
+  mkdir -p "$home/data"
+  printf '%s\n%s\n' "- $marker" "- $dollar" > "$home/data/crew-notes.md"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" cn-scout proj --scout >/dev/null 2>&1 \
+    || fail "crew-notes: scout scaffold exited non-zero with a notes file present"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" cn-ship proj --mode local-only >/dev/null 2>&1 \
+    || fail "crew-notes: ship scaffold exited non-zero with a notes file present"
+  for id in cn-scout cn-ship; do
+    brief="$home/data/$id/brief.md"
+    assert_grep "# Standing crew notes" "$brief" \
+      "$id: crew-notes file present but the section header is missing"
+    assert_grep "$marker" "$brief" "$id: crew-notes body was not spliced into the brief"
+    # shellcheck disable=SC2016
+    assert_grep '`select:LSP`' "$brief" "$id: crew-notes backticks were not preserved verbatim"
+    assert_grep "$dollar" "$brief" \
+      "$id: crew-notes \$-expression was not preserved verbatim (expanded at scaffold time)"
+    assert_no_grep "EOF" "$brief" "$id: crew-notes splice leaked a heredoc EOF marker"
+  done
+
+  # Absent: no file, no section, clean scaffold.
+  home="$TMP_ROOT/crew-notes-absent"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" cn-scout proj --scout >/dev/null 2>&1 \
+    || fail "crew-notes: scout scaffold exited non-zero with no notes file"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" cn-ship proj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "crew-notes: ship scaffold exited non-zero with no notes file"
+  for id in cn-scout cn-ship; do
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$id: brief was not scaffolded without a notes file"
+    assert_no_grep "# Standing crew notes" "$brief" \
+      "$id: absent crew-notes file still emitted an empty section"
+  done
+
+  # Blank-only: treated as absent.
+  home="$TMP_ROOT/crew-notes-blank"
+  mkdir -p "$home/data"
+  printf '   \n\n\t\n' > "$home/data/crew-notes.md"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" cn-scout proj --scout >/dev/null 2>&1 \
+    || fail "crew-notes: scout scaffold exited non-zero with a blank notes file"
+  brief="$home/data/cn-scout/brief.md"
+  assert_no_grep "# Standing crew notes" "$brief" \
+    "blank-only crew-notes file still emitted a section"
+  pass "fm-brief.sh: data/crew-notes.md splices into briefs verbatim and is absent-safe"
+}
+
 test_worker_role_scope
 test_script_parses
 test_no_heredoc_in_command_substitution
@@ -935,3 +990,4 @@ test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
 test_scout_lavish_line_follows_presentation_floor
+test_crew_notes_splice_from_data_file
