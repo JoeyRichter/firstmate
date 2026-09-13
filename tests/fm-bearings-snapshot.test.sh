@@ -59,6 +59,16 @@ if [ "${FAKE_GH_MANY:-0}" = 1 ]; then
 JSON
   exit 0
 fi
+if [ "${FAKE_GH_MIXED:-0}" = 1 ]; then
+  # A non-default prefix on a known task, a human chore/fm-* branch that is NOT a
+  # task, a foreign branch, and a default-shape fm/<id> branch whose id is NOT in
+  # this fleet's own snapshot (e.g. a secondmate's own child task). Only the known
+  # task and the default-shape branch must be claimed.
+  cat <<'JSON'
+[{"number":21,"title":"Prefixed","url":"https://github.com/kunchenguid/firstmate/pull/21","headRefName":"chore/fm-ship-task","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":22,"title":"Human chore","url":"https://github.com/kunchenguid/firstmate/pull/22","headRefName":"chore/fm-cleanup","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":23,"title":"Foreign","url":"https://github.com/kunchenguid/firstmate/pull/23","headRefName":"feature/JIRA-1-thing","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":24,"title":"Unknown default shape","url":"https://github.com/kunchenguid/firstmate/pull/24","headRefName":"fm/unknown-to-this-fleet","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]}]
+JSON
+  exit 0
+fi
 cat <<'JSON'
 [{"number":9,"title":"Ship the thing","url":"https://github.com/kunchenguid/firstmate/pull/9","headRefName":"fm/ship-task","reviewDecision":"APPROVED","mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS","status":"COMPLETED"}]}]
 JSON
@@ -1414,6 +1424,32 @@ test_include_prs_is_the_only_fetch_path() {
     .candidate_prs | any(.[]; .num == "9" and .task == "ship-task" and .checks == "passing" and .review == "APPROVED")
   ' >/dev/null || fail "candidate_prs must carry the fetched PR cross-referenced to its task: $json"
   pass "--include-prs is the only path that fetches, and it enriches correctly"
+}
+
+test_pr_head_task_link_is_prefix_agnostic_and_evidence_based() {
+  local home fakebin json
+  home=$(make_home prs); write_fixture "$home"
+  fakebin=$(make_fakebin "$home"); : > "$home/net.log"
+  json=$(FAKE_GH_MIXED=1 run "$home" "$fakebin" --include-prs --json)
+  # A non-default prefix on a KNOWN task is linked back to the task id.
+  printf '%s' "$json" | jq -e '
+    .candidate_prs | any(.[]; .num == "21" and .task == "ship-task")
+  ' >/dev/null || fail "a chore/fm-<known-id> head must link to its task: $json"
+  # A human chore/fm-* branch that is not a task must NOT be claimed.
+  printf '%s' "$json" | jq -e '
+    .candidate_prs | any(.[]; .num == "22" and .task == "-")
+  ' >/dev/null || fail "a chore/fm-<unknown> head must not be claimed as a task: $json"
+  # A foreign branch is not a firstmate task branch.
+  printf '%s' "$json" | jq -e '
+    .candidate_prs | any(.[]; .num == "23" and .task == "-")
+  ' >/dev/null || fail "a foreign branch must not be claimed as a task: $json"
+  # A default-shape fm/<id> head is claimed unconditionally, even when its id is
+  # unknown to this fleet's own snapshot (e.g. a secondmate's own child task) -
+  # the known-id gate applies only to the ambiguous configured-prefix shape.
+  printf '%s' "$json" | jq -e '
+    .candidate_prs | any(.[]; .num == "24" and .task == "unknown-to-this-fleet")
+  ' >/dev/null || fail "a default fm/<id> head must be claimed even when the id is unknown to this fleet: $json"
+  pass "PR head task link is prefix-agnostic and gated on a known task id only for the configured-prefix shape"
 }
 
 test_partial_github_failure_degrades() {
@@ -3357,6 +3393,7 @@ test_open_decision_surfaces_end_to_end
 test_report_pointers_surface
 test_queued_item_prose_never_hides_it
 test_include_prs_is_the_only_fetch_path
+test_pr_head_task_link_is_prefix_agnostic_and_evidence_based
 test_partial_github_failure_degrades
 test_perl_fallback_bounds_github_call
 test_section_caps_and_expansion_flags

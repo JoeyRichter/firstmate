@@ -16,6 +16,13 @@
 #   - <name> [<mode>] - <desc> (added <date>)          -> <mode> off
 #   - <name> [<mode> +yolo] - <desc> (added <date>)    -> <mode> on
 #
+# The posture bracket may also carry an optional `branch=<prefix>` token (in any
+# order, e.g. `[direct-PR +yolo branch=chore/fm-]`) that overrides this project's
+# git branch prefix; bin/fm-branch-lib.sh is its single owner and default (fm/).
+# This script sources that file's fm_registry_posture_tokens to tokenize the same
+# bracket and skips the branch= and +yolo tokens when resolving mode, so token
+# order never matters for either token.
+#
 # Registered modes:
 #   no-mistakes            full pipeline -> PR -> configured merge authority (default)
 #   direct-PR              push + PR via gh-axi, no pipeline
@@ -42,6 +49,8 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 REG="$DATA/projects.md"
+# shellcheck source=bin/fm-branch-lib.sh
+. "$SCRIPT_DIR/fm-branch-lib.sh"
 RAW=0
 if [ "${1:-}" = "--raw" ]; then
   RAW=1
@@ -55,30 +64,22 @@ if [ ! -f "$REG" ]; then
   exit 0
 fi
 
-# awk emits "<mode> <yolo>" (one line) or nothing if the project is absent.
-parsed=$(awk -v n="$NAME" '
-  $1=="-" && $2==n {
-    mode="no-mistakes"; yolo="off";
-    if ($3 ~ /^\[/) {
-      s="";
-      for (i=3; i<=NF; i++) { s = s (s==""?"":" ") $i; if ($i ~ /\]$/) break }
-      gsub(/^\[|\]$/, "", s);           # strip the surrounding brackets
-      k = split(s, a, " ");
-      if (a[1] != "" && a[1] != "+yolo") mode = a[1];
-      for (j=1; j<=k; j++) if (a[j]=="+yolo") yolo="on";
-    }
-    print mode, yolo; exit
-  }
-' "$REG")
-
-if [ -z "$parsed" ]; then
+tokens=$(fm_registry_posture_tokens "$REG" "$NAME") || {
   echo "warn: project \"$NAME\" not in registry; defaulting to no-mistakes off" >&2
   echo "no-mistakes off"
   exit 0
-fi
+}
 
-mode=${parsed%% *}
-yolo=${parsed##* }
+mode=no-mistakes
+yolo=off
+mode_set=
+for tok in $tokens; do
+  case "$tok" in
+    +yolo) yolo=on ;;
+    branch=*) ;;
+    *) [ -n "$mode_set" ] || { mode=$tok; mode_set=1; } ;;
+  esac
+done
 case "$mode" in
   no-mistakes|direct-PR|local-only|no-mistakes-prod-only) ;;
   *) echo "warn: unknown mode \"$mode\" for $NAME; defaulting to no-mistakes off" >&2; mode=no-mistakes; yolo=off ;;

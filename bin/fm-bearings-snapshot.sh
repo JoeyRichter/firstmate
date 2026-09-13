@@ -99,6 +99,9 @@ FLEET="$SCRIPT_DIR/fm-fleet-snapshot.sh"
 # shellcheck source=bin/fm-landed-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-landed-lib.sh"  # FM_LANDED_JQ_DEFS: the shared landed selector
+# shellcheck source=bin/fm-branch-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-branch-lib.sh"  # fm_branch_task_id: PR head -> task id (single owner)
 
 # Bounds (overridable for tests / large fleets).
 FM_BEARINGS_LANDED=${FM_BEARINGS_LANDED:-6}
@@ -286,6 +289,12 @@ EOF
 
     for repo in $repos; do PR_REPOS_TOTAL=$((PR_REPOS_TOTAL + 1)); done
     nrepos=0; npr=0; nwarn=0; ncapped=0; rows='[]'
+    # A PR head with the configured, non-default prefix shape (chore/fm-, etc.) is
+    # claimed as a task row only when its extracted id is a task this fleet
+    # actually knows, since that shape is also what a repo's humans use for their
+    # own non-firstmate branches (chore/, feat/, ...). The classic fm/<id> shape
+    # was never a human branch convention, so it stays claimed unconditionally.
+    known_task_ids=$(printf '%s' "$SNAP" | jq -r '.tasks[].id // empty')
     pr_fetch_limit=$((FM_BEARINGS_PR_LIMIT + 1))
     for repo in $repos; do
       if [ "$ALL_PR_REPOS" != 1 ] && [ "$nrepos" -ge "$FM_BEARINGS_PR_REPOS" ]; then break; fi
@@ -294,11 +303,26 @@ EOF
         --json number,title,url,headRefName,reviewDecision,mergeable,statusCheckRollup 2>/dev/null) \
         || { nwarn=$((nwarn + 1)); continue; }
       [ -n "$out" ] || out='[]'
-      repo_result=$(printf '%s' "$out" | jq --arg repo "$repo" --argjson limit "$FM_BEARINGS_PR_LIMIT" '
+      # Map each PR head back to its task id through the single owner
+      # (fm_branch_task_id), which undoes whatever prefix the project resolved to
+      # rather than only the literal fm/. bearings has a repo slug, not a project
+      # name, so the reverse mapping is deliberately prefix-shape based; only the
+      # non-default shape (fm_branch_ref_is_default) is then gated on a known task
+      # id above so a foreign chore/fm-* branch is not claimed.
+      taskmap=$(printf '%s' "$out" | jq -r '.[].headRefName // empty' | sort -u | while IFS= read -r ref; do
+        [ -n "$ref" ] || continue
+        tid=$(fm_branch_task_id "$ref") || continue
+        if ! fm_branch_ref_is_default "$ref"; then
+          printf '%s\n' "$known_task_ids" | grep -Fxq -- "$tid" || continue
+        fi
+        jq -n --arg k "$ref" --arg v "$tid" '{($k):$v}'
+      done | jq -s 'add // {}')
+      [ -n "$taskmap" ] || taskmap='{}'
+      repo_result=$(printf '%s' "$out" | jq --arg repo "$repo" --argjson limit "$FM_BEARINGS_PR_LIMIT" --argjson taskmap "$taskmap" '
         [ .[] | {
           num:(.number|tostring),
           repo:$repo,
-          task:(if (.headRefName // "" | startswith("fm/")) then (.headRefName | ltrimstr("fm/")) else "-" end),
+          task:($taskmap[(.headRefName // "")] // "-"),
           url:(.url // "-"),
           review:(.reviewDecision // "none"),
           mergeable:(.mergeable // "UNKNOWN"),

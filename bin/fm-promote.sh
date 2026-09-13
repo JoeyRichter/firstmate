@@ -5,7 +5,8 @@
 # again. Promotion also writes the crewmate's ship instructions to
 # data/<task-id>/ship-instructions.md and prints the fm-send.sh command that
 # delivers them. Those instructions carry the scratch-state inventory, the clean
-# default-branch base, the fm/<task-id> branch, and - rendered from
+# default-branch base, the task's branch (bin/fm-branch-lib.sh; fm/<task-id> by
+# default), and - rendered from
 # bin/fm-dod-lib.sh, the single owner an ordinary ship brief also uses - the
 # mode-specific Definition of done, so a promoted worker receives exactly the same
 # delivery contract as a briefed one, including the no-mistakes mode's ask-user
@@ -46,6 +47,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
+# shellcheck source=bin/fm-branch-lib.sh
+. "$SCRIPT_DIR/fm-branch-lib.sh"
 
 MODE=
 YOLO=
@@ -153,6 +156,12 @@ if [ -z "$(printf '%s' "$INTENT_BODY" | tr -d '[:space:]')" ]; then
   exit 1
 fi
 
+# Resolve the ship branch once through the single owner (bin/fm-branch-lib.sh)
+# from the task's registered project, so a promoted worker creates the same
+# prefixed branch a briefed one would; an unconfigured project yields fm/<id>.
+PROMOTE_PROJ=$(grep '^project=' "$META" | cut -d= -f2- || true)
+BRANCH=$(fm_branch_name "$PROMOTE_PROJ" "$ID") || exit 1
+
 # The promoted worker must receive the same delivery contract an ordinary ship
 # brief carries, so the mode-specific Definition of done is rendered from its
 # single owner (bin/fm-dod-lib.sh) rather than summarised into a hint line. A
@@ -179,7 +188,7 @@ EOF
 ## Firstmate spec
 1. **Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from. If either does not resolve to the worktree you were launched in, stop and escalate to firstmate.
 2. Inventory this worktree's scratch state with \`git status\` and \`git log\` before changing anything.
-3. Return to a clean default-branch base, then create your branch: \`git checkout -b fm/$ID\`.
+3. Return to a clean default-branch base, then create your branch: \`git checkout -b $BRANCH\`.
 4. Carry over only the intended fix changes. Leave scratch commits, debug edits, and experiment files behind.
 5. If you reproduced a bug, turn that reproduction into a regression test.
 6. These ship instructions supersede the scout delivery rules and report-based Definition of done. Everything else in your original instructions carries over unchanged: the status protocol; the instruction inbox and its acknowledgement; the escalation rules, including ask-user; and every safety rule.
@@ -187,7 +196,7 @@ $PROMOTION_ASK_USER_BLOCK
 7. Treat the scout-time Firstmate spec and any unmarked legacy \`# Task\` text as investigation context, not captain intent or ship-time instructions.
 EOF
   printf '\n'
-  fm_dod_block "$MODE" "$ID"
+  fm_dod_block "$MODE" "$ID" "$BRANCH"
 } > "$TMP" || { echo "error: could not render ship instructions for mode=$MODE" >&2; exit 1; }
 mv "$TMP" "$INSTRUCTIONS"
 TMP=

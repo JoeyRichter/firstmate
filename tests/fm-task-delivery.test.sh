@@ -431,6 +431,27 @@ EOF
   pass "fm-project-mode: the conditional policy is accepted, mapped for mechanical callers, and readable raw"
 }
 
+# The posture bracket's branch= token may appear before the mode token (the
+# header's documented "any order"). The mode token must still resolve correctly
+# rather than being swallowed as a bogus mode and falling back to a warning.
+test_project_mode_branch_token_order_independent() {
+  local home out err
+  home="$TMP_ROOT/project-mode-order/home"
+  mkdir -p "$home/data"
+  cat > "$home/data/projects.md" <<'EOF'
+- leadproj [branch=chore/fm- no-mistakes-prod-only] - branch= token before mode (added 2026-09-13)
+- yololeadproj [branch=chore/fm- +yolo direct-PR] - branch= then +yolo then mode (added 2026-09-13)
+EOF
+  out=$(FM_HOME="$home" "$PROJECT_MODE" leadproj 2>/dev/null)
+  [ "$out" = "no-mistakes off" ] || fail "a leading branch= token broke mode resolution (got '$out')"
+  err=$(FM_HOME="$home" "$PROJECT_MODE" leadproj 2>&1 >/dev/null)
+  [ -z "$err" ] || fail "a leading branch= token wrongly triggered an unknown-mode warning: $err"
+
+  out=$(FM_HOME="$home" "$PROJECT_MODE" yololeadproj 2>/dev/null)
+  [ "$out" = "direct-PR on" ] || fail "branch= and +yolo ahead of the mode token broke resolution (got '$out')"
+  pass "fm-project-mode: the mode token resolves regardless of where branch= sits in the bracket"
+}
+
 # Spawn and promotion refuse leftover Task-subsection placeholders through the
 # public brief/spawn/promote path. Filling both subsections lets the spawn
 # delivery checks proceed (the fake tmux still fails later).
@@ -800,5 +821,6 @@ test_promote_requires_and_records_the_delivery_contract
 test_promote_refuses_a_symlinked_task_record
 test_promotion_delivers_the_real_definition_of_done
 test_project_mode_maps_the_conditional_policy
+test_project_mode_branch_token_order_independent
 test_spawn_and_promote_require_filled_task_subsections
 echo "# all fm-task-delivery tests passed"

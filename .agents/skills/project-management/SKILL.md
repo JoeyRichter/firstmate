@@ -52,6 +52,10 @@ The optional `+yolo` posture changes merge authority only and does not change th
 Default it off for every project and every posture, and enable it only on the captain's explicit instruction.
 `AGENTS.md` section 7 owns the merge-authority contract.
 
+The registry bracket may also carry an optional `branch=<prefix>` token that overrides this project's git task-branch prefix.
+Set it only when the project's own branch rules require a different shape than firstmate's `fm/` default.
+`bin/fm-branch-lib.sh` owns the token format, default, and validation.
+
 ## Add or clone an existing project
 
 Confirm the source URL, local project name, delivery posture, and autonomy posture, stating the resolved default for each rather than asking the captain to invent one.
