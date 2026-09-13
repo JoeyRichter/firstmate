@@ -214,6 +214,12 @@ test_ship_modes_generate_clean_briefs() {
     assert_grep "## Captain's intent" "$brief" "$id: brief missing Captain's intent subsection"
     assert_grep "## Firstmate spec" "$brief" "$id: brief missing Firstmate spec subsection"
     assert_grep 'never a bare number such as "PR 108"' "$brief" "$id: brief missing the full-PR-URL rule"
+    assert_grep "semantic code-intelligence (LSP) tooling is configured for that language over grep" "$brief" \
+      "$id: brief missing the LSP-over-grep guidance for symbol-level questions"
+    assert_grep 'load it once with ToolSearch' "$brief" \
+      "$id: brief missing the deferred-LSP ToolSearch load step"
+    assert_grep "string searches stay fine with grep" "$brief" \
+      "$id: brief overcorrected away from grep for plain-text searches"
     assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
       "$id: brief missing nonterminal working:/setup-complete gate protection"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
@@ -861,6 +867,10 @@ test_scout_and_secondmate_scaffold() {
   assert_present "$brief" "scout brief was not scaffolded"
   assert_grep "SCOUT task" "$brief" "scout brief must declare itself a scout task"
   assert_grep "report.md" "$brief" "scout brief must point at the report deliverable"
+  assert_grep "semantic code-intelligence (LSP) tooling is configured for that language over grep" "$brief" \
+    "scout brief missing the LSP-over-grep guidance for symbol-level questions"
+  assert_grep 'load it once with ToolSearch' "$brief" \
+    "scout brief missing the deferred-LSP ToolSearch load step"
   assert_grep "## Captain's intent" "$brief" "scout brief missing Captain's intent subsection"
   assert_grep "## Firstmate spec" "$brief" "scout brief missing Firstmate spec subsection"
   assert_grep "{FIRSTMATE_SPEC}" "$brief" "scout brief missing the spec placeholder"

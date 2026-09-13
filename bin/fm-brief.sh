@@ -355,6 +355,21 @@ IFS= read -r -d '' TASK_SECTION <<'EOF' || true
 EOF
 TASK_SECTION=${TASK_SECTION%$'\n'}
 
+# Single owner of the worker-facing tool-usage rule shared by the scout and ship
+# scaffolds. Kept in one variable so the guidance cannot drift between the two
+# heredocs. The backticks live in this quoted heredoc as literal text, so they
+# stay literal when the value is expanded into the unquoted brief heredocs.
+IFS= read -r -d '' TOOLS_RULE <<'EOF' || true
+3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
+   For symbol-level questions about code - finding every real reference to a symbol, confirming a
+   symbol has zero callers anywhere, or jumping to a definition across namespaces and inheritance -
+   prefer whatever semantic code-intelligence (LSP) tooling is configured for that language over grep,
+   which is not authoritative for these. In Claude Code that tool is deferred, so
+   load it once with ToolSearch `select:LSP` before calling it.
+   Plain text, config, and string searches stay fine with grep.
+EOF
+TOOLS_RULE=${TOOLS_RULE%$'\n'}
+
 if [ "$KIND" = scout ]; then
 if "$SCRIPT_DIR/fm-bootstrap.sh" lavish-compatible >/dev/null 2>&1; then
   LAVISH_LINE='If your deliverable is a visual artifact the captain will review and iterate on, you may host the Lavish review loop yourself (poll, revise, re-serve, staying alive) instead of handing it back to firstmate.'
@@ -377,7 +392,7 @@ The report is the only thing that survives, so anything worth keeping must be in
 # Rules
 1. Never push to any remote and never open a PR.
 2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
-3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
+$TOOLS_RULE
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
@@ -466,7 +481,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 # Rules
 $RULE1
 2. Stay inside this worktree; modify nothing outside it.
-3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
+$TOOLS_RULE
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
