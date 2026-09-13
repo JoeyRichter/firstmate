@@ -108,6 +108,11 @@ fm_harness_process_matches() {  # <comm> <args>
 # claude), with no non-harness process between them. Which pid in that run is the
 # session cannot be read off the ancestry at all, so the whole contiguous run is
 # reported and the callers below decide what they need from it.
+#
+# This walk needs no spare-pool exclusion: it climbs real parents from $$, and a
+# bg-pty-host the daemon has recycled into its idle spare pool is parented by the
+# daemon or init and hosts nothing, so it is never an ancestor of a live session.
+# The recycled-spare liveness distinction is owned by fm_harness_pid_alive below.
 fm_harness_ancestry_pids() {
   local pid=$$ comm args extending=0 printed=0
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
@@ -150,13 +155,43 @@ EOF
   printf '%s\n' "$outermost"
 }
 
+# True when Claude command line $1 describes a bg-pty-host that Claude Code's own
+# daemon has recycled into its idle, unclaimed spare pool rather than a process
+# hosting a live session. A recycled spare advertises itself for claiming with
+# --bg-spare (a .../spare/<id>.claim.sock control path) and carries no
+# --session-id, so no session is bound to it; a claimed host always carries
+# --session-id (and its control socket is .../pty/<id>.sock) and never carries
+# --bg-spare. Excluding requires --bg-spare to be PRESENT, and only a spare
+# carries it, so an active host can never be excluded; requiring --session-id to
+# be ABSENT is the extra safety conjunct against a future build that emits both.
+# A truncated argv that loses --bg-spare fails open to the prior behavior rather
+# than into wrongly excluding a live host. Verified against Claude Code 2.1.269
+# and 2.1.270, 2026-09-13. Callers gate this behind FM_HARNESS_IS_CLAUDE because
+# this pooling is specific to Claude Code's bg-pty-host process model.
+fm_harness_claude_args_are_idle_spare() {  # <args>
+  local args=" $1 "
+  case "$args" in *' --session-id '*) return 1 ;; esac
+  case "$args" in *' --bg-spare '*) return 0 ;; esac
+  return 1
+}
+
 # True if $1 is a live process that looks like a verified harness.
 fm_harness_pid_alive() {
   local pid=$1 comm args
   kill -0 "$pid" 2>/dev/null || return 1
   comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
   args=$(ps -o args= -p "$pid" 2>/dev/null)
-  fm_harness_process_matches "$comm" "$args"
+  fm_harness_process_matches "$comm" "$args" || return 1
+  # A Claude bg-pty-host the daemon has recycled into its idle spare pool stays
+  # alive and still name-matches, but hosts no session; treating it as a live
+  # harness is what let a dead session's lock survive indefinitely. Exclude it
+  # here rather than in fm_harness_process_matches so the ancestry walk's
+  # contiguous Claude widening is untouched: a recycled spare is never an
+  # ancestor of a live session, so it never appears in that walk.
+  if [ "$FM_HARNESS_IS_CLAUDE" -eq 1 ] && fm_harness_claude_args_are_idle_spare "$args"; then
+    return 1
+  fi
+  return 0
 }
 
 # True when state dir $1 holds a session lock whose pid is ANY harness ancestor

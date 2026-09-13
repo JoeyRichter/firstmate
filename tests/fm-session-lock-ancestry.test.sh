@@ -266,6 +266,70 @@ SH
   pass "session-lock: a live version-named session holding the lock is not mistaken for a stale owner"
 }
 
+test_recycled_spare_is_not_live_but_active_host_is() {
+  local dir fakebin got
+  dir="$TMP_ROOT/recycled-spare"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  # Two Claude bg-pty-host processes that name-match identically and are both
+  # alive, differing only in what their argv says about session binding:
+  #   500 - recycled into the daemon's idle spare pool: --bg-spare a
+  #         .../spare/<id>.claim.sock control path, and no --session-id. Hosts no
+  #         session, so it must NOT read as a live harness.
+  #   510 - actively hosting a session: --session-id and a .../pty/<id>.sock
+  #         control socket, no --bg-spare. Still a live harness.
+  # The default rows make the walk climb from $$ (bash) into 510.
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) pid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$pid:$field" in
+  500:comm=) printf '%s\n' 'claude bg-pty-host' ;;
+  500:args=) printf '%s\n' 'claude bg-pty-host --bg-pty-host /tmp/cc-daemon-502/3b7/spare/5eb3595d.pty.sock 200 50 -- /Users/u/.local/share/claude/versions/2.1.270 --bg-spare /tmp/cc-daemon-502/3b7/spare/5eb3595d.claim.sock' ;;
+  500:ppid=) printf '%s\n' 1 ;;
+  510:comm=) printf '%s\n' 'claude bg-pty-host' ;;
+  510:args=) printf '%s\n' 'claude bg-pty-host --bg-pty-host /tmp/cc-daemon-502/3b7/pty/f170ee2e.sock 189 60 -- /Users/u/.local/share/claude/versions/2.1.270 --session-id f170ee2e-72bc-4668-9c60-c7b4e3609ac8 --resume /x.jsonl' ;;
+  510:ppid=) printf '%s\n' 1 ;;
+  *:comm=) printf '%s\n' bash ;;
+  *:args=) printf '%s\n' 'bash /repo/bin/fm-claude-stop-autoarm.sh' ;;
+  *:ppid=) printf '%s\n' 510 ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+
+  # Divergence guard: without the spare exclusion both pids are indistinguishable
+  # here - both name-match and both are alive - so the recycled-spare case cannot
+  # pass vacuously through an over-broad rejection.
+  lib_eval "$fakebin" 'fm_harness_process_matches "claude bg-pty-host" "claude bg-pty-host --bg-spare /tmp/x/spare/a.claim.sock"' \
+    || fail "the recycled spare must still name-match the harness regex"
+  lib_eval "$fakebin" 'fm_harness_process_matches "claude bg-pty-host" "claude bg-pty-host --session-id f1 --resume /x"' \
+    || fail "the active host must still name-match the harness regex"
+
+  if lib_eval "$fakebin" 'fm_harness_pid_alive 500'; then
+    fail "a recycled unclaimed bg-spare host was treated as a live harness"
+  fi
+  lib_eval "$fakebin" 'fm_harness_pid_alive 510' \
+    || fail "an active bg-pty-host hosting a session was not recognized as a live harness"
+
+  # The stale lock naming the recycled spare must be reclaimable: it is not this
+  # ancestry's owner, and the active host is found by the acquisition-time walk.
+  printf '500\n' > "$dir/state/.lock"
+  if lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'"; then
+    fail "a recycled spare pid was accepted as this session's lock owner"
+  fi
+  got=$(lib_eval "$fakebin" 'fm_harness_ancestry_pid') \
+    || fail "the acquisition walk did not resolve the active host"
+  [ "$got" = 510 ] || fail "the acquisition walk resolved '$got', expected the active host 510 and never a recycled spare"
+  pass "session-lock: a recycled unclaimed bg-spare host is not live while an active bg-pty-host still is"
+}
+
 # --- end-to-end layer: the real Stop auto-arm in real process trees ----------
 
 install_autoarm_scripts() {
@@ -409,6 +473,7 @@ test_harness_at_namespace_pid1_is_examined
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock
 test_competing_version_named_session_is_seen_as_live
+test_recycled_spare_is_not_live_but_active_host_is
 test_e2e_version_named_session_claims_the_home
 test_e2e_daemon_parented_session_claims_the_home
 test_e2e_daemon_parented_version_named_session_keeps_its_lock
