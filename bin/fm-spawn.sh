@@ -318,9 +318,12 @@
 # starts in - the task worktree, or the secondmate home for a --secondmate spawn -
 # in the launching user's own Claude trust store through bin/fm-claude-trust.sh,
 # because Claude's interactive workspace-trust dialog gates a folder it has never
-# seen and firstmate cannot answer it. That helper's header owns the structural
-# scope test for both shapes and every refusal; a failed registration stops this
-# spawn rather than launching a worker that would wedge on the dialog.
+# seen and firstmate cannot answer it. A task worktree also needs the canonical
+# git root Claude keys its per-project state on, which that helper derives from
+# git rather than from the project argument passed here. That helper's header
+# owns the structural scope test for both shapes, the root derivation, and every
+# refusal; a failed registration stops this spawn rather than launching a worker
+# that would wedge on the dialog.
 # Every claude launch also carries the attribution-off policy in its per-launch
 # --settings JSON, so a spawned worker never writes a Co-Authored-By trailer,
 # Claude-Session link, or generated-with line into a commit or PR body;
@@ -3361,9 +3364,10 @@ if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
 fi
 
-# Pre-register Claude's workspace trust for the directory this launch starts in,
-# at the first point that directory is known and before any per-task state is
-# created below. The dialog gates the pane before the brief is ever read, and it
+# Pre-register Claude's workspace trust for the directory this launch starts in
+# (plus, for a task worktree, the canonical git root derived there), at the
+# first point that directory is known and before any per-task state is created
+# below. The dialog gates the pane before the brief is ever read, and it
 # also gates loading the project settings written further down, so nothing armed
 # below takes effect without it. EVERY claude launch needs it, a secondmate's
 # included: its home is just as unseen by Claude as a fresh worktree, and

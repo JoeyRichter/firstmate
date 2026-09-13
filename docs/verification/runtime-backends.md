@@ -345,6 +345,46 @@ The lab home was deleted and the test entry was removed from the store and verif
 That automated spawn case runs against a fake claude, so it asserts the store entry and the launch command and nothing more; the live arms above are what establish that the entry actually suppresses the dialog.
 The composer-classification record below observes the same gate from the other side, where an untrusted worktree left Claude, Grok, and Muse unverified because the guard reads a first-launch trust dialog as an unreadable composer.
 
+### Gated-grants dialog keys on the canonical git root (2026-09-12, Claude Code 2.1.270)
+
+A live scout spawn on a newly registered project hit an interactive dialog even though `bin/fm-claude-trust.sh` had already pre-registered `hasTrustDialogAccepted` for its worktree: `Accessing workspace: <path>` / `Quick safety check: ...`, followed by a distinct block, `This folder pre-approves N tool permissions in .claude/settings.json: <list>`, with the default selection on `No, continue without these permissions` rather than `No, exit`.
+That variant is new relative to the "Workspace trust" record above (2.1.220/2.1.259): it fires when the workspace's `.claude/settings.json` or `settings.local.json` carries `permissions.allow` rules or `additionalDirectories`, and firstmate's Enter/Escape/C-c-only key plane cannot answer it for the same structural reason it cannot answer the plain trust dialog.
+
+The key it looks trust up under is the CANONICAL GIT ROOT, not the worktree and not the path a caller calls the project.
+Read from the 2.1.270 bundle on 2026-09-12, as supporting mechanism for the measurement below rather than as the claim itself: `findGitRoot(cwd)` locates the directory holding `.git`, then a canonicalizer reads that `.git` when it is a FILE, follows its `gitdir:` pointer and that gitdir's `commondir`, asserts the gitdir's own `gitdir` file points back at the worktree, and returns the parent of the main checkout's git dir - the repository's MAIN WORKING TREE.
+That value is `projectPathForConfig`, the key the vendor's per-project entry is both read from and written to, `hasTrustDialogAccepted` included; a primary checkout maps to itself, because its `.git` is a directory and the canonicalizer returns its input unchanged.
+Two separate single-key trust predicates sit side by side on that path, neither of which walks ancestors: one resolves its key through the canonicalizer above, the other uses the plain resolved path.
+The gated-grants variant is gated on the canonicalizing one, which is why a registered worktree does not satisfy it, and the vendor's own write helper also keys on the canonicalizer - so Claude records a human's accepted trust under the canonical root too.
+The bundle is minified and its identifiers are scoped per chunk, so nothing here rests on a symbol name; the measured table below is the claim, and this paragraph only names the mechanism that explains it.
+
+Reproduction needs a genuinely interactive pty (a piped or `-p` launch renders neither dialog) and real managed authentication (an unauthenticated session skips the whole init flow), against `claude --version` `2.1.270 (Claude Code)`.
+One variable was moved at a time against a fresh, never-before-seen repository with TWO linked worktrees, so the `<project>` argument and the canonical root are different paths - the linked-spawning-home shape `bin/fm-spawn.sh` supports:
+
+```sh
+git init proj-main && git -C proj-main commit --allow-empty -qm init
+git -C proj-main worktree add --detach home-wt HEAD     # the <project> argument
+git -C home-wt   worktree add --detach task-wt HEAD     # the task worktree
+mkdir -p task-wt/.claude
+echo '{"permissions":{"allow":["Bash(npm:*)","Bash(git:*)"]}}' > task-wt/.claude/settings.json
+```
+
+| Registered in `.claude.json` | Dialog rendered in `task-wt` |
+|---|---|
+| nothing | yes (base trust + gated grants, cursor on `No, exit`) |
+| `task-wt` only | yes (gated grants, cursor on `No, continue without these permissions`) |
+| `task-wt` + `home-wt` (the `<project>` argument) | yes |
+| `task-wt` + `proj-main` (the canonical root) | no, composer reached |
+
+The third row is the one that settles the design: registering the `<project>` argument suppresses nothing when that argument is itself a linked worktree, because Claude never looks there.
+`bin/fm-claude-trust.sh` therefore derives the root from git's own main-working-tree record for the already-validated worktree and registers it beside the worktree in the same atomic write, unconditionally rather than only when the settings currently carry gated grants, since the vendor keys the gate on the root whichever file supplies the grants and a settings file can gain them after registration.
+A bare repository has no main working tree and refuses; the derived root is written only after it is proven to own the shared common dir and to be neither HOME nor the Claude config directory.
+In the ordinary spawn shape, where `<project>` IS the main working tree, both paths coincide and the behavior is unchanged.
+
+`tests/fm-claude-worktree-permissions-trust-live-e2e.test.sh` (default-on, `FM_CLAUDE_TRUST_LIVE_E2E=0` to disable, no model tokens) pins this end to end against the real installed binary.
+It carries two non-vacuous controls - worktree-only, and worktree-plus-`<project>`-argument - so both the original bug and a regression back to the argument-based derivation fail it loudly, then proves the production script in the divergent and the ordinary shape.
+Last run 2026-09-12 on 2.1.270: pass.
+`tests/fm-claude-trust.test.sh` pins the resulting persisted-store contract without a real harness (both paths land, a linked spawning home registers the main checkout and never itself, a project subdirectory still yields the checkout root, an existing canonical-root entry keeps its other keys, and a secondmate home still registers only the home).
+
 ## Composer classification matrix
 
 The shared composer classifier (`bin/fm-composer-lib.sh`, `fm_composer_classify_screen`) owns every composer shape fleet-wide; each backend contributes only a capture and a capability descriptor.

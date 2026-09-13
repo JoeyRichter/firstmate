@@ -10,7 +10,8 @@
 #   <project>   the primary checkout that worktree belongs to
 #   <home>      the seeded secondmate home this spawn launches into
 #   <id>        the secondmate id that home must already be marked for
-# Prints one line naming what it registered; refuses loudly on anything else.
+# Prints one line naming every path it registered; refuses loudly on anything
+# else.
 #
 # WHY THIS EXISTS. Claude Code gates a folder it has never seen behind an
 # interactive workspace-trust dialog, and --dangerously-skip-permissions does
@@ -23,6 +24,39 @@
 # and must not try - pressing Enter would select exit. The agent wedges before
 # it ever reads the brief. Registering the trust before launch is the only
 # control that reaches an interactive pane.
+#
+# WHY THE CANONICAL ROOT IS REGISTERED TOO, in worktree mode. Registering the
+# worktree alone does not clear every workspace-trust gate. Claude carries more
+# than one trust predicate, and the gated-grants variant of the dialog ("This
+# folder pre-approves N tool permissions in .claude/settings.json"), shown when
+# the project's settings carry `permissions.allow` rules or
+# `additionalDirectories`, is gated on one that keys on the CANONICAL GIT ROOT:
+# the main working tree a linked worktree's `.git` file points at, which for a
+# firstmate worker is projects/<name>. Claude derives that root itself from the
+# same git metadata, and its own per-project entry - `hasTrustDialogAccepted`
+# included - is written there as well, so this is the key the vendor uses rather
+# than a path firstmate chose. A worktree registered on its own therefore still
+# met that dialog, and a primary checkout is exactly the path the scope test
+# below refuses as a <worktree>. Measured, not inferred: the dated table in
+# docs/verification/runtime-backends.md is the claim, and the vendor-internal
+# mechanism there is bounded as supporting detail because the bundle is
+# minified.
+#
+# The root is therefore registered UNCONDITIONALLY rather than only when the
+# settings currently carry gated grants: Claude keys the gate on the root
+# whichever file supplies the grants, a settings file can gain them between this
+# registration and the launch or on the task branch itself, and the entry is
+# harmless for a project without them. With trust accepted, that dialog's
+# Escape ("No, continue without these permissions") continues the session
+# without the project's allow rules instead of exiting.
+#
+# THE ROOT IS DERIVED FROM GIT, NEVER FROM THE <project> ARGUMENT. The two
+# coincide only when <project> happens to be the repository's main working tree.
+# fm-spawn.sh also supports a LINKED SPAWNING HOME - a firstmate home that is
+# itself a linked worktree of the project repository - and there <project> is
+# that home while Claude still keys on the repository's main checkout, so
+# registering the argument leaves the worker parked on the dialog, measured both
+# ways against the real installed binary.
 #
 # THE SCOPE TEST IS THE SAFETY PROPERTY, and it is STRUCTURAL rather than a
 # path policy. Each mode has its own, because the two directories have entirely
@@ -77,13 +111,14 @@
 # home and the secondmate works across it, so it is granted on that seed
 # evidence alone and never on a caller's word about what a path is.
 #
-# Only the launching user's own store is written: the projects entry for the
+# Only the launching user's own store is written: the projects entry for each
 # registered path in ${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json, which must be a
 # regular file this uid owns. Every unrelated key and project entry is
-# preserved, and the replacement is atomic. fm-spawn.sh forwards CLAUDE_CONFIG_DIR
-# onto the claude launch verbatim rather than resolving it, and the pane starts
-# in the registered directory, so only an absolute value names the same store on
-# both sides; a relative one is refused below rather than guessed at.
+# preserved, including the other keys of an existing canonical-root entry, and
+# the replacement is atomic. fm-spawn.sh forwards CLAUDE_CONFIG_DIR onto the
+# claude launch verbatim rather than resolving it, and the pane starts in the
+# registered directory, so only an absolute value names the same store on both
+# sides; a relative one is refused below rather than guessed at.
 set -u
 # Path resolution here must answer from the filesystem, never from the caller's
 # environment, because the refusals below are the safety property. CDPATH would
@@ -204,6 +239,37 @@ if [ "$MODE" = worktree ]; then
   PROJ_COMMON=$(common_dir_of "$PROJ_REAL") || true
   [ -n "$PROJ_COMMON" ] || refuse "project '$PROJ_REAL' is not inside a git repository"
   [ "$WT_COMMON" = "$PROJ_COMMON" ] || refuse "'$TARGET_REAL' is not a worktree of project '$PROJ_REAL'"
+
+  # The canonical root, derived from the already-accepted worktree through git
+  # rather than taken from either argument: the repository's main working tree
+  # is the first record git lists. A bare repository still lists its own
+  # directory first, with a `bare` line inside that record, so the whole first
+  # record is read and a bare one yields no root at all.
+  ROOT_LISTED=$(git -C "$TARGET_REAL" worktree list --porcelain 2>/dev/null | awk '
+    /^worktree / && root == "" { root = substr($0, 10); next }
+    /^bare$/ { bare = 1 }
+    /^$/ { exit }
+    END { if (!bare) print root }
+  ') || true
+  [ -n "$ROOT_LISTED" ] || refuse "'$TARGET_REAL' has no main working tree to serve as its canonical root (a bare repository has none)"
+  ROOT_REAL=$(real_dir "$ROOT_LISTED") || true
+  [ -n "$ROOT_REAL" ] || refuse "the main working tree '$ROOT_LISTED' of '$TARGET_REAL' is not an accessible directory"
+  # The owner proof. This registration is an ADDITION derived from the validated
+  # pair above, never a relaxation of it, so the listed root must be the primary
+  # checkout that OWNS the shared common dir and must be a checkout root rather
+  # than a subdirectory. The home and config guards apply to it for the same
+  # reason they apply to the worktree: neither is ever a project checkout worth
+  # a standing trust entry. A caller cannot reach an arbitrary primary checkout
+  # this way, because <worktree> must independently pass as a linked worktree of
+  # <project>'s repository first and the root then comes from git.
+  [ "$ROOT_REAL" != "$CONFIG_DIR_REAL" ] || refuse "canonical root '$ROOT_REAL' is the Claude config directory, not a project checkout"
+  [ "$ROOT_REAL" != "${HOME_REAL:-}" ] || refuse "canonical root '$ROOT_REAL' is the home directory, not a project checkout"
+  ROOT_TOP=$(git -C "$ROOT_REAL" rev-parse --show-toplevel 2>/dev/null) || true
+  ROOT_TOP_REAL=$(real_dir "${ROOT_TOP:-/nonexistent}") || true
+  [ "$ROOT_TOP_REAL" = "$ROOT_REAL" ] || refuse "canonical root '$ROOT_REAL' is not a checkout root (its root is '${ROOT_TOP_REAL:-unresolvable}')"
+  ROOT_GIT_DIR=$(git -C "$ROOT_REAL" rev-parse --absolute-git-dir 2>/dev/null) || true
+  ROOT_GIT_DIR=$(real_dir "${ROOT_GIT_DIR:-/nonexistent}") || true
+  [ "$ROOT_GIT_DIR" = "$WT_COMMON" ] || refuse "canonical root '$ROOT_REAL' does not own the common git directory of '$TARGET_REAL'"
 else
   # The seed evidence, in the order that names the most useful reason first: the
   # marker decides whether this is a secondmate home at all, the id decides
@@ -247,6 +313,16 @@ fi
 # where a missing tool belongs rather than as a stalled pane later.
 command -v node >/dev/null 2>&1 || refuse "node is required to record workspace trust and was not found on PATH"
 
+# Every path this mode must register, in one list, so the single atomic write
+# below lands all of them and the readback proves each one. Worktree mode adds
+# the canonical root derived above; a secondmate home is registered on its own
+# because the home is where the pane starts and works, and nothing about that
+# grant depends on a repository shape the seed does not fix.
+TRUST_TARGETS=("$TARGET_REAL")
+if [ "$MODE" = worktree ]; then
+  TRUST_TARGETS+=("$ROOT_REAL")
+fi
+
 STORE="$CONFIG_DIR_REAL/.claude.json"
 # A dotfile manager or a synced folder legitimately symlinks this store, so the
 # link is followed to its final target and every check below judges that target.
@@ -287,11 +363,11 @@ fi
 # attempts, and it must fail loudly rather than report a trust it did not leave.
 # ponytail: fingerprint-and-refuse, not a lock; flock is absent on macOS and
 # cannot stop a vendor session's own rewrite anyway.
-if ! node - "$STORE" "$TARGET_REAL" <<'NODE'
+if ! node - "$STORE" "${TRUST_TARGETS[@]}" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const [store, target] = process.argv.slice(2);
+const [store, ...targets] = process.argv.slice(2);
 const readStore = () => {
   try {
     return fs.readFileSync(store);
@@ -320,12 +396,18 @@ const attempt = () => {
   if (projects === null || typeof projects !== "object" || Array.isArray(projects)) {
     throw new Error(`${store} has a non-object "projects" value`);
   }
-  let entry = projects[target];
-  if (entry === undefined || entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-    entry = {};
+  // Every target in one replacement. An existing entry keeps every other key it
+  // carries - allowedTools, history, and the rest of what Claude records per
+  // project - and only the trust flag is set, which matters most for the
+  // canonical root, where Claude's own per-project state already lives.
+  for (const target of targets) {
+    let entry = projects[target];
+    if (entry === undefined || entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      entry = {};
+    }
+    entry.hasTrustDialogAccepted = true;
+    projects[target] = entry;
   }
-  entry.hasTrustDialogAccepted = true;
-  projects[target] = entry;
   // Unpredictable name plus an exclusive create: the config directory may be
   // writable by another local account, and a predictable path could be
   // pre-created there as a symlink that a plain write would follow into some
@@ -347,7 +429,9 @@ const attempt = () => {
     if (!renamed) fs.rmSync(tmp, { force: true });
   }
   const back = JSON.parse(fs.readFileSync(store, "utf8"));
-  return back.projects?.[target]?.hasTrustDialogAccepted === true ? "recorded" : "dropped";
+  return targets.every((target) => back.projects?.[target]?.hasTrustDialogAccepted === true)
+    ? "recorded"
+    : "dropped";
 };
 try {
   for (let i = 0; i < 3; i += 1) {
@@ -362,11 +446,19 @@ try {
   console.error(`error: ${err.message}`);
   process.exit(1);
 }
-console.error(`error: ${store} did not retain trust for ${target} after 3 attempts`);
+console.error(`error: ${store} did not retain trust for ${targets.join(" and ")} after 3 attempts`);
 process.exit(1);
 NODE
 then
-  refuse "could not record trust for '$TARGET_REAL' in '$STORE'"
+  # Quoted per path, so a path carrying a space is still unambiguous here.
+  TRUST_TARGETS_QUOTED=$(printf "'%s' " "${TRUST_TARGETS[@]}")
+  refuse "could not record trust for ${TRUST_TARGETS_QUOTED% } in '$STORE'"
 fi
 
-echo "trusted: $TARGET_REAL"
+# Every registered path, so a spawn log shows exactly what Claude's own two
+# lookups will find.
+if [ "$MODE" = worktree ]; then
+  echo "trusted: $TARGET_REAL (canonical root: $ROOT_REAL)"
+else
+  echo "trusted: $TARGET_REAL"
+fi

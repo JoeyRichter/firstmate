@@ -21,8 +21,15 @@ Claude gates a folder it has never seen behind an interactive workspace-trust di
 Every claude spawn therefore pre-registers the directory its pane starts in before launch, and the dialog does not appear: the task worktree for a ship or scout, and the home itself for a `--secondmate` spawn, in either seeded shape (a leased worktree or a standalone clone).
 `../../../bin/fm-claude-trust.sh` records `hasTrustDialogAccepted` for that path in `${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json` and owns the structural scope test each shape must pass, and `../../../bin/fm-spawn.sh` refuses the spawn when the registration fails rather than launching an agent that would wedge.
 
+A task worktree needs a second path registered, and the spawn records both.
+Claude keys its per-project state, and the trust check behind the gated-grants dialog, on the CANONICAL GIT ROOT - the main working tree a linked worktree's `.git` file points at, normally `projects/<name>` - which a worktree's own entry does not satisfy.
+Registering the worktree alone therefore left a worker parked on the gated-grants variant of the dialog, `This folder pre-approves N tool permissions in .claude/settings.json`, which is shown when the project's settings carry `permissions.allow` rules or `additionalDirectories`.
+The script derives that root from git rather than from its `<project>` argument, because the two differ whenever the spawning home is itself a linked worktree; its header owns the derivation, the owner proof, and why the root is registered unconditionally.
+With trust accepted, that variant's Escape (`No, continue without these permissions`) continues the session without the project's allow rules instead of exiting, so `fm-control interrupt` dismisses it.
+`../../../../../docs/verification/runtime-backends.md` owns the dated reproduction.
+
 Never try to answer the trust dialog with a key.
-Firstmate's key plane carries only Enter, Escape, and C-c with no arrow navigation, so it cannot move a dialog's selection at all, and the observed rendering starts on `No, exit`, which means a sent Enter ends the session instead of accepting.
+Firstmate's key plane carries only Enter, Escape, and C-c with no arrow navigation, so it cannot move a dialog's selection at all, and the observed rendering starts on `No, exit` (`No, continue without these permissions` in the gated-grants variant), which means a sent Enter ends the session or drops the project's permissions instead of accepting.
 A visible trust dialog means pre-registration did not take effect, so inspect the store and the spawn's error output rather than sending keys.
 
 The once-per-machine bypass-permissions confirmation is a separate dialog, scoped to the machine rather than the path, and pre-registration does not address it.
